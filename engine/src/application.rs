@@ -1,0 +1,108 @@
+use std::sync::Arc;
+
+use debounce::EventDebouncer;
+use winit::{
+    application::ApplicationHandler,
+    event::{ElementState, KeyEvent, WindowEvent},
+    event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
+    window::WindowId,
+};
+
+use crate::{
+    config::{
+        EngineConfig, create_window_attributes, get_engine_config, update_engine_config_file,
+    },
+    game_window::GameWindow,
+    voxels::{chunk::Voxel, coord::WorldPos, world::World},
+};
+
+pub struct Application {
+    pub game_window: Option<GameWindow>,
+    engine_config: EngineConfig,
+    config_debouncer: EventDebouncer<EngineConfig>,
+}
+
+impl Application {
+    pub fn new() -> Self {
+        let engine_config = get_engine_config().unwrap_or_default();
+        let config_debouncer = EventDebouncer::new(
+            std::time::Duration::from_millis(200),
+            move |config: EngineConfig| {
+                update_engine_config_file(&config).unwrap();
+            },
+        );
+        Application {
+            game_window: None,
+            engine_config,
+            config_debouncer,
+        }
+    }
+}
+
+impl ApplicationHandler<GameWindow> for Application {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let window_attributes = create_window_attributes(&self.engine_config);
+        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        self.game_window = Some(pollster::block_on(GameWindow::new(window)).unwrap());
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: GameWindow) {
+        self.game_window = Some(event);
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let game_window = match &mut self.game_window {
+            Some(window) => window,
+            None => return,
+        };
+
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                self.engine_config.window_size = Some((size.width, size.height));
+                self.config_debouncer.put(self.engine_config.clone());
+                game_window.resize(size.width, size.height);
+            }
+            WindowEvent::Moved(position) => {
+                self.engine_config.window_position = Some((position.x, position.y));
+                self.config_debouncer.put(self.engine_config.clone());
+            }
+            WindowEvent::RedrawRequested => {
+                game_window.render().unwrap();
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(code),
+                        state: key_state,
+                        ..
+                    },
+                ..
+            } => match (code, key_state) {
+                (KeyCode::Escape, ElementState::Pressed) => {
+                    event_loop.exit();
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+
+pub fn run_application() -> anyhow::Result<()> {
+    let world = World::new();
+    let dirt = Voxel::from_type(1);
+
+    world.set_voxel(WorldPos::new(0, 0, 0), dirt);
+
+    let mut app = Application::new();
+    let event_loop = EventLoop::with_user_event().build()?;
+    event_loop.run_app(&mut app)?;
+    Ok(())
+}
