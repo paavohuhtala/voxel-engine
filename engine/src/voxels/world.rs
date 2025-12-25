@@ -1,6 +1,7 @@
 use crate::voxels::{
-    chunk::{Chunk, Voxel},
+    chunk::Chunk,
     coord::{ChunkPos, WorldPos},
+    voxel::Voxel,
 };
 
 use dashmap::{DashMap, DashSet};

@@ -1,4 +1,9 @@
-pub mod allocator;
 pub mod chunk_mesh;
 pub mod chunk_mesh_generator;
-pub mod gpu_allocator;
+pub mod memory;
+pub mod passes;
+pub mod render_camera;
+pub mod resolution;
+pub mod texture;
+pub mod util;
+pub mod world_renderer;

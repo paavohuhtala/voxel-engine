@@ -14,13 +14,14 @@ use crate::{
         EngineConfig, create_window_attributes, get_engine_config, update_engine_config_file,
     },
     game_window::GameWindow,
-    voxels::{chunk::Voxel, coord::WorldPos, world::World},
+    voxels::{chunk::Chunk, coord::ChunkPos, voxel::Voxel, world::World},
 };
 
 pub struct Application {
     pub game_window: Option<GameWindow>,
     engine_config: EngineConfig,
     config_debouncer: EventDebouncer<EngineConfig>,
+    world: World,
 }
 
 impl Application {
@@ -32,10 +33,17 @@ impl Application {
                 update_engine_config_file(&config).unwrap();
             },
         );
+
+        let world = World::new();
+        world
+            .chunks
+            .insert(ChunkPos::new(0, 0, 0), Chunk::Solid(Voxel::STONE));
+
         Application {
             game_window: None,
             engine_config,
             config_debouncer,
+            world,
         }
     }
 }
@@ -45,6 +53,11 @@ impl ApplicationHandler<GameWindow> for Application {
         let window_attributes = create_window_attributes(&self.engine_config);
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
         self.game_window = Some(pollster::block_on(GameWindow::new(window)).unwrap());
+        self.game_window
+            .as_mut()
+            .unwrap()
+            .world_renderer
+            .create_all_chunks(&self.world);
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: GameWindow) {
@@ -70,6 +83,9 @@ impl ApplicationHandler<GameWindow> for Application {
                 game_window.resize(size.width, size.height);
             }
             WindowEvent::Moved(position) => {
+                if game_window.is_minimized() {
+                    return;
+                }
                 self.engine_config.window_position = Some((position.x, position.y));
                 self.config_debouncer.put(self.engine_config.clone());
             }
@@ -96,13 +112,10 @@ impl ApplicationHandler<GameWindow> for Application {
 }
 
 pub fn run_application() -> anyhow::Result<()> {
-    let world = World::new();
-    let dirt = Voxel::from_type(1);
-
-    world.set_voxel(WorldPos::new(0, 0, 0), dirt);
+    pretty_env_logger::init_timed();
 
     let mut app = Application::new();
-    let event_loop = EventLoop::with_user_event().build()?;
+    let event_loop: EventLoop<GameWindow> = EventLoop::with_user_event().build()?;
     event_loop.run_app(&mut app)?;
     Ok(())
 }

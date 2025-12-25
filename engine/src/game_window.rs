@@ -1,15 +1,22 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use wgpu::{RenderPassDescriptor, wgt::CommandEncoderDescriptor};
 use winit::window::Window;
+
+use crate::rendering::{
+    resolution::Resolution, texture::DepthTexture, world_renderer::WorldRenderer,
+};
 
 pub struct GameWindow {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    depth_texture: DepthTexture,
     is_surface_configured: bool,
     window: Arc<Window>,
+    pub world_renderer: WorldRenderer,
+    last_frame_time: Instant,
 }
 
 impl GameWindow {
@@ -28,7 +35,10 @@ impl GameWindow {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::empty(),
+                required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE
+                    | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
+                    | wgpu::Features::TEXTURE_BINDING_ARRAY
+                    | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: Default::default(),
@@ -55,13 +65,26 @@ impl GameWindow {
             desired_maximum_frame_latency: 2,
         };
 
+        let depth_texture = DepthTexture::new(
+            &device,
+            Resolution {
+                width: size.width,
+                height: size.height,
+            },
+            "Depth texture",
+        );
+
+        let world_renderer = WorldRenderer::new(&device, &queue, size.width, size.height);
         Ok(GameWindow {
             surface,
             device,
             queue,
             config,
+            depth_texture,
             is_surface_configured: false,
             window,
+            world_renderer,
+            last_frame_time: Instant::now(),
         })
     }
 
@@ -70,13 +93,17 @@ impl GameWindow {
             self.config.width = width;
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
+            self.depth_texture
+                .resize(&self.device, winit::dpi::PhysicalSize { width, height });
             self.is_surface_configured = true;
+            self.world_renderer.resize(width, height);
         } else {
             self.is_surface_configured = false;
         }
     }
 
     pub fn render(&mut self) -> anyhow::Result<()> {
+        self.update();
         self.window.request_redraw();
 
         if !self.is_surface_configured {
@@ -113,16 +140,39 @@ impl GameWindow {
                     },
                     depth_slice: None,
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: self.depth_texture.view(),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 occlusion_query_set: None,
                 multiview_mask: None,
                 timestamp_writes: None,
             });
         }
 
+        {
+            self.world_renderer
+                .render(&mut encoder, &view, &self.depth_texture);
+        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
         Ok(())
+    }
+
+    pub fn update(&mut self) {
+        let now = Instant::now();
+        let delta_time = now.duration_since(self.last_frame_time);
+        self.world_renderer.update(delta_time);
+        self.last_frame_time = now;
+    }
+
+    pub fn is_minimized(&self) -> bool {
+        self.window.is_minimized().unwrap_or(false)
     }
 }

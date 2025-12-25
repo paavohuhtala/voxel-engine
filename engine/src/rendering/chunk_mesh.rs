@@ -1,14 +1,19 @@
 use std::mem::offset_of;
 
 use bytemuck::{Pod, Zeroable};
-use glam::{U8Vec4, UVec4};
-use wgpu::util::DeviceExt;
+use glam::{IVec4, U8Vec4};
+use wgpu::{VertexAttribute, VertexBufferLayout};
+
+use crate::rendering::memory::gpu_heap::GpuHeapHandle;
 
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod)]
 pub struct GpuChunk {
     // World position of the chunk (x, y, z, min_y/max_y packed in w)
-    pub position_and_y_range: UVec4,
+    pub position_and_y_range: IVec4,
+    pub mesh_data_index_offset: u32,
+    pub mesh_data_index_count: u32,
+    pub mesh_data_vertex_offset: i32,
 }
 
 #[repr(C)]
@@ -23,73 +28,41 @@ pub struct ChunkVertex {
 }
 
 impl ChunkVertex {
-    pub fn descriptor() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<ChunkVertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                // position
-                wgpu::VertexAttribute {
-                    offset: offset_of!(ChunkVertex, position) as u64,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Uint8x4,
-                },
-                // material_index + _padding
-                wgpu::VertexAttribute {
-                    offset: offset_of!(ChunkVertex, material_index) as u64,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Uint32,
-                },
-            ],
-        }
-    }
+    pub const VBL: VertexBufferLayout<'static> = VertexBufferLayout {
+        array_stride: size_of::<ChunkVertex>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &[
+            VertexAttribute {
+                offset: offset_of!(ChunkVertex, position) as u64,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Uint8x4,
+            },
+            VertexAttribute {
+                offset: offset_of!(ChunkVertex, material_index) as u64,
+                shader_location: 1,
+                format: wgpu::VertexFormat::Uint32,
+            },
+        ],
+    };
 }
 
+#[derive(Clone, Default)]
 pub struct ChunkMeshData {
-    pub position_and_y_range: UVec4,
+    // World position of the chunk (x, y, z, min_y/max_y packed in w)
+    pub position_and_y_range: IVec4,
     pub vertices: Vec<ChunkVertex>,
-    pub indices: Vec<u32>,
+    pub indices: Vec<u16>,
 }
 
 impl ChunkMeshData {
     pub fn new() -> Self {
-        ChunkMeshData {
-            position_and_y_range: UVec4::ZERO,
-            vertices: Vec::new(),
-            indices: Vec::new(),
-        }
-    }
-
-    pub fn create(self, device: &wgpu::Device) -> ChunkMesh {
-        let name = format!(
-            "ChunkMesh_{}_{}_{}",
-            self.position_and_y_range.x, self.position_and_y_range.y, self.position_and_y_range.z,
-        );
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("{} Vertex Buffer", name)),
-            contents: bytemuck::cast_slice(&self.vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("{} Index Buffer", name)),
-            contents: bytemuck::cast_slice(&self.indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        ChunkMesh {
-            position_and_y_range: self.position_and_y_range,
-            vertex_buffer,
-            index_buffer,
-            index_count: self.indices.len() as u32,
-        }
+        Self::default()
     }
 }
 
 pub struct ChunkMesh {
-    pub position_and_y_range: UVec4,
-    pub vertex_buffer: wgpu::Buffer,
-    pub index_buffer: wgpu::Buffer,
+    pub position_and_y_range: IVec4,
+    pub vertices_handle: GpuHeapHandle<ChunkVertex>,
+    pub indices_handle: GpuHeapHandle<u16>,
     pub index_count: u32,
 }

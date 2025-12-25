@@ -22,14 +22,13 @@ pub struct AllocatorConfig {
     pub min_order: u8,
 }
 
-// A simple Buddy allocator implementation, for external (GPU) memory management.
-// Allocation metadata is stored in CPU memory, but the data itself is in GPU memory.
-pub struct Allocator {
+/// A simple Buddy allocator implementation to be used with external memory, primarily GPU buffers.
+pub struct BuddyAllocator {
     config: AllocatorConfig,
     blocks: Vec<Block>,
 }
 
-impl Allocator {
+impl BuddyAllocator {
     pub fn new(config: AllocatorConfig) -> Self {
         assert!(
             config.total_size.is_power_of_two(),
@@ -42,7 +41,7 @@ impl Allocator {
             order: (config.total_size as f64).log2() as u8,
             is_free: true,
         };
-        Allocator {
+        BuddyAllocator {
             config,
             blocks: vec![initial_block],
         }
@@ -206,7 +205,7 @@ impl Allocator {
 mod tests {
     use super::*;
 
-    fn assert_layout(allocator: &Allocator, expected: &[(u64, u64, bool)]) {
+    fn assert_layout(allocator: &BuddyAllocator, expected: &[(u64, u64, bool)]) {
         assert_eq!(
             allocator.blocks.len(),
             expected.len(),
@@ -228,7 +227,7 @@ mod tests {
             alignment: 1,
             min_order: 0,
         };
-        let mut allocator = Allocator::new(config);
+        let mut allocator = BuddyAllocator::new(config);
 
         assert_layout(&allocator, &[(0, 1024, true)]);
 
@@ -260,7 +259,7 @@ mod tests {
             alignment: 1,
             min_order: 0,
         };
-        let mut allocator = Allocator::new(config);
+        let mut allocator = BuddyAllocator::new(config);
 
         let a = allocator.allocate(64).unwrap();
         let b = allocator.allocate(64).unwrap();
@@ -325,7 +324,7 @@ mod tests {
             alignment: 64,
             min_order: 0,
         };
-        let mut allocator = Allocator::new(config);
+        let mut allocator = BuddyAllocator::new(config);
 
         // Request 1 byte. Should be aligned to 64, so block size at least 64.
         let offset = allocator.allocate(1).unwrap();
@@ -344,7 +343,7 @@ mod tests {
             alignment: 1,
             min_order: 0,
         };
-        let mut allocator = Allocator::new(config);
+        let mut allocator = BuddyAllocator::new(config);
 
         // 1. Allocate 128
         let mut ptr = allocator.allocate(128).unwrap();
