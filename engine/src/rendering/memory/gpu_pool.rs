@@ -1,5 +1,6 @@
 use std::{
     marker::PhantomData,
+    mem::size_of,
     sync::{Arc, RwLock},
 };
 
@@ -8,13 +9,13 @@ use bytemuck::Pod;
 use crate::rendering::memory::pool::Pool;
 
 pub struct GpuPoolHandle<T> {
-    offset: u64,
+    index: u64,
     pool: Arc<GpuPool<T>>,
 }
 
 impl<T: Pod> GpuPoolHandle<T> {
     pub fn offset(&self) -> u64 {
-        self.offset
+        self.index
     }
 
     pub fn size(&self) -> u64 {
@@ -29,7 +30,7 @@ impl<T: Pod> GpuPoolHandle<T> {
 impl<T> Drop for GpuPoolHandle<T> {
     fn drop(&mut self) {
         let mut pool = self.pool.pool.write().unwrap();
-        pool.free(self.offset);
+        pool.free(self.index);
     }
 }
 
@@ -56,7 +57,7 @@ impl<T> GpuPool<T> {
             mapped_at_creation: false,
         });
 
-        let pool = Pool::new(size_objects, size_of::<T>() as u64);
+        let pool = Pool::new(size_objects);
 
         GpuPool {
             buffer,
@@ -70,7 +71,7 @@ impl<T> GpuPool<T> {
         let mut pool = self.pool.write().unwrap();
         let offset = pool.allocate()?;
         Some(GpuPoolHandle {
-            offset,
+            index: offset,
             pool: Arc::clone(self),
         })
     }
@@ -86,7 +87,8 @@ impl<T> GpuPool<T> {
 
 impl<T: Pod> GpuPool<T> {
     pub fn write_data(&self, allocation: &GpuPoolHandle<T>, data: &T) {
+        let byte_offset = allocation.offset() * size_of::<T>() as u64;
         self.queue
-            .write_buffer(&self.buffer, allocation.offset, bytemuck::bytes_of(data));
+            .write_buffer(&self.buffer, byte_offset, bytemuck::bytes_of(data));
     }
 }

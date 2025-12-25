@@ -17,7 +17,7 @@ use crate::{
             gpu_pool::{GpuPool, GpuPoolHandle},
             typed_buffer::{GpuBuffer, GpuBufferArray},
         },
-        passes::{render_common::RenderCommon, world_geo::WorldGeometryPass},
+        passes::world_geo::WorldGeometryPass,
         render_camera::RenderCamera,
         resolution::Resolution,
         texture::DepthTexture,
@@ -63,14 +63,14 @@ impl WorldBuffers {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        vertex_capacity: u64,
-        index_capacity: u64,
+        vertex_capacity_bytes: u64,
+        index_capacity_bytes: u64,
     ) -> Self {
         let vertex_buffer = GpuHeap::new(
             device,
             queue.clone(),
             wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            vertex_capacity,
+            vertex_capacity_bytes,
             align_of::<ChunkVertex>() as u64,
             "World vertex buffer",
         );
@@ -78,7 +78,7 @@ impl WorldBuffers {
             device,
             queue.clone(),
             wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            index_capacity,
+            index_capacity_bytes,
             align_of::<u16>() as u64,
             "World index buffer",
         );
@@ -133,13 +133,7 @@ impl WorldBuffers {
         }
     }
 
-    pub fn allocate_chunk_mesh(&self, mesh_data: &ChunkMeshData) -> ChunkMesh {
-        log!(
-            log::Level::Info,
-            "Allocating chunk mesh: {} vertices, {} indices",
-            mesh_data.vertices.len(),
-            mesh_data.indices.len()
-        );
+    pub fn initialize_chunk_mesh(&self, mesh_data: &ChunkMeshData) -> ChunkMesh {
         let vertex_allocation = self
             .vertices
             .clone()
@@ -151,6 +145,15 @@ impl WorldBuffers {
             .clone()
             .allocate(mesh_data.indices.len() as u64)
             .expect("Failed to allocate index buffer for chunk mesh");
+
+        log!(
+            log::Level::Info,
+            "allocated chunk mesh: {} vertices, {} indices. Vertex offset: {}, Index offset: {}",
+            mesh_data.vertices.len(),
+            mesh_data.indices.len(),
+            vertex_allocation.byte_offset(),
+            index_allocation.byte_offset()
+        );
 
         vertex_allocation.write_data(&mesh_data.vertices);
         index_allocation.write_data(&mesh_data.indices);
@@ -170,8 +173,6 @@ pub struct WorldRenderer {
     buffers: WorldBuffers,
     render_chunks: DashMap<ChunkPos, RenderChunk>,
     pass: WorldGeometryPass,
-    // TODO: Lift this higher up
-    render_common: RenderCommon,
     pub camera: RenderCamera,
     camera_angle: f32,
 }
@@ -182,7 +183,6 @@ impl WorldRenderer {
     pub const INDEX_BUFFER_CAPACITY: u64 = 32 * 1024 * 1024; // 32 million indices
 
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) -> Self {
-        let render_common = RenderCommon::new(device);
         let buffers = WorldBuffers::new(device, queue, 1024 * 1024, 1024 * 1024);
 
         let camera = Camera {
@@ -211,7 +211,6 @@ impl WorldRenderer {
             buffers,
             render_chunks: DashMap::new(),
             pass,
-            render_common,
             camera: render_camera,
             camera_angle: 0.0,
         }
@@ -225,7 +224,7 @@ impl WorldRenderer {
         );
 
         let mesh_data = generate_chunk_mesh_data(pos, chunk);
-        let chunk_mesh = self.buffers.allocate_chunk_mesh(&mesh_data);
+        let chunk_mesh = self.buffers.initialize_chunk_mesh(&mesh_data);
         // TODO: Proper AABB calculation
         let aabb = AABB::new(
             glam::Vec3::new(
@@ -247,9 +246,10 @@ impl WorldRenderer {
 
         gpu_chunk.write_data(&GpuChunk {
             position_and_y_range: chunk_mesh.position_and_y_range,
-            mesh_data_index_offset: chunk_mesh.indices_handle.offset() as u32,
+            mesh_data_index_offset: chunk_mesh.indices_handle.index() as u32,
             mesh_data_index_count: chunk_mesh.indices_handle.count() as u32,
-            mesh_data_vertex_offset: chunk_mesh.vertices_handle.offset() as i32,
+            mesh_data_vertex_offset: chunk_mesh.vertices_handle.index() as i32,
+            _padding: 0,
         });
 
         let render_chunk = RenderChunk {

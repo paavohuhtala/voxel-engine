@@ -6,7 +6,7 @@ use wgpu::{VertexAttribute, VertexBufferLayout};
 
 use crate::rendering::memory::gpu_heap::GpuHeapHandle;
 
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Clone, Copy, Zeroable, Pod)]
 pub struct GpuChunk {
     // World position of the chunk (x, y, z, min_y/max_y packed in w)
@@ -14,6 +14,7 @@ pub struct GpuChunk {
     pub mesh_data_index_offset: u32,
     pub mesh_data_index_count: u32,
     pub mesh_data_vertex_offset: i32,
+    pub _padding: u32,
 }
 
 #[repr(C)]

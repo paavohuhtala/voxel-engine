@@ -3,16 +3,14 @@ pub struct Pool {
     free_indices: Vec<u64>,
     next_free_index: u64,
     capacity: u64,
-    object_size: u64,
 }
 
 impl Pool {
-    pub fn new(capacity: u64, object_size: u64) -> Self {
+    pub fn new(capacity: u64) -> Self {
         Pool {
             free_indices: Vec::new(),
             next_free_index: 0,
             capacity,
-            object_size,
         }
     }
 

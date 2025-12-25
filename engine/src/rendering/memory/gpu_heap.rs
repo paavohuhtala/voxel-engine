@@ -1,5 +1,6 @@
 use std::{
     marker::PhantomData,
+    mem::size_of,
     sync::{Arc, RwLock},
 };
 
@@ -8,7 +9,8 @@ use bytemuck::Pod;
 use crate::rendering::memory::buddy_allocator::{AllocatorConfig, BuddyAllocator};
 
 pub struct GpuHeapHandle<T> {
-    offset: u64,
+    byte_offset: u64,
+    index: u64,
     size: u64,
     #[allow(unused)]
     count: u64,
@@ -16,8 +18,12 @@ pub struct GpuHeapHandle<T> {
 }
 
 impl<T: Pod> GpuHeapHandle<T> {
-    pub fn offset(&self) -> u64 {
-        self.offset
+    pub fn byte_offset(&self) -> u64 {
+        self.byte_offset
+    }
+
+    pub fn index(&self) -> u64 {
+        self.index
     }
 
     pub fn size(&self) -> u64 {
@@ -37,7 +43,11 @@ impl<T: Pod> GpuHeapHandle<T> {
 
 impl<T> Drop for GpuHeapHandle<T> {
     fn drop(&mut self) {
-        self.allocator.allocator.write().unwrap().free(self.offset);
+        self.allocator
+            .allocator
+            .write()
+            .unwrap()
+            .free(self.byte_offset);
     }
 }
 
@@ -47,6 +57,8 @@ pub struct GpuHeap<T> {
     buffer: wgpu::Buffer,
     queue: wgpu::Queue,
     allocator: RwLock<BuddyAllocator>,
+    #[allow(unused)]
+    label: String,
     _marker: PhantomData<T>,
 }
 
@@ -79,17 +91,20 @@ impl<T> GpuHeap<T> {
             buffer,
             queue,
             allocator: RwLock::new(allocator),
+            label,
             _marker: PhantomData,
         }
     }
 
     pub fn allocate(self: Arc<Self>, count: u64) -> Option<GpuHeapHandle<T>> {
         let mut allocator = self.allocator.write().unwrap();
-        if let Some(offset) = allocator.allocate(count) {
+        let size_bytes = count * size_of::<T>() as u64;
+        if let Some(byte_offset) = allocator.allocate(size_bytes) {
             Some(GpuHeapHandle {
-                offset,
+                byte_offset,
+                index: byte_offset / size_of::<T>() as u64,
                 count,
-                size: count * size_of::<T>() as u64,
+                size: size_bytes,
                 allocator: self.clone(),
             })
         } else {
@@ -98,12 +113,13 @@ impl<T> GpuHeap<T> {
     }
 
     pub fn reallocate(&self, allocation: &mut GpuHeapHandle<T>, new_count: u64) -> Option<()> {
+        let new_size = new_count * size_of::<T>() as u64;
         let mut allocator = self.allocator.write().unwrap();
-        let new_offset =
-            allocator.reallocate(allocation.offset, new_count * size_of::<T>() as u64)?;
-        allocation.offset = new_offset;
+        let new_byte_offset = allocator.reallocate(allocation.byte_offset, new_size)?;
+        allocation.byte_offset = new_byte_offset;
+        allocation.index = new_byte_offset / size_of::<T>() as u64;
         allocation.count = new_count;
-        allocation.size = new_count * size_of::<T>() as u64;
+        allocation.size = new_size;
         Some(())
     }
 
@@ -120,7 +136,10 @@ impl<T: Pod> GpuHeap<T> {
     pub fn write_data(&self, allocation: &GpuHeapHandle<T>, data: &[T]) {
         let byte_data: &[u8] = bytemuck::cast_slice(data);
         assert!(byte_data.len() as u64 <= allocation.size);
-        self.queue
-            .write_buffer(&self.buffer, allocation.offset, bytemuck::cast_slice(data));
+        self.queue.write_buffer(
+            &self.buffer,
+            allocation.byte_offset,
+            bytemuck::cast_slice(data),
+        );
     }
 }

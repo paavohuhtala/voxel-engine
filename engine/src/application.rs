@@ -38,6 +38,12 @@ impl Application {
         world
             .chunks
             .insert(ChunkPos::new(0, 0, 0), Chunk::Solid(Voxel::STONE));
+        world
+            .chunks
+            .insert(ChunkPos::new(0, -1, 0), Chunk::Solid(Voxel::STONE));
+        world
+            .chunks
+            .insert(ChunkPos::new(1, 0, 0), Chunk::Solid(Voxel::STONE));
 
         Application {
             game_window: None,
