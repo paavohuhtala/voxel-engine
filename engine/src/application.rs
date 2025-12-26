@@ -15,11 +15,12 @@ use crate::{
     },
     game_window::GameWindow,
     voxels::{
-        chunk::Chunk,
+        chunk::{Chunk, PackedChunk},
         coord::{ChunkPos, LocalPos},
         voxel::Voxel,
         world::World,
     },
+    worldgen::generate_noise_world,
 };
 
 pub struct Application {
@@ -47,19 +48,9 @@ impl Application {
             [1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1],
         ];
 
-        let world = World::new();
+        let world = generate_noise_world();
         {
-            world
-                .chunks
-                .insert(ChunkPos::new(0, 0, 0), Chunk::Solid(Voxel::STONE));
-            world
-                .chunks
-                .insert(ChunkPos::new(1, 0, 0), Chunk::Solid(Voxel::STONE));
-            let mut binding = world
-                .chunks
-                .entry(ChunkPos::new(0, 1, 0))
-                .or_insert_with(|| Chunk::Solid(Voxel::AIR));
-            let chunk = binding.value_mut();
+            let mut chunk = Chunk::Packed(PackedChunk::new());
 
             for (y, row) in HELLO.iter().enumerate() {
                 for (x, &value) in row.iter().enumerate() {
@@ -68,6 +59,8 @@ impl Application {
                     }
                 }
             }
+
+            world.chunks.insert(ChunkPos::new(0, 1, 0), chunk);
         }
 
         Application {

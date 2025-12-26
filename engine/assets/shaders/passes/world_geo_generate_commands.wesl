@@ -1,4 +1,6 @@
 
+import package::common::chunk::Chunk;
+
 struct CullingParams {
     input_chunk_count: u32,
 }
@@ -33,13 +35,6 @@ var<storage, read_write> draw_commands: array<DrawIndexedIndirect>;
 @group(2) @binding(3)
 var<storage, read_write> draw_count: atomic<u32>;
 
-struct Chunk {
-    position: vec4<i32>,
-    mesh_data_index_offset: u32,
-    mesh_data_index_count: u32,
-    mesh_data_vertex_offset: i32,
-}
-
 @compute @workgroup_size(64)
 fn main(
     @builtin(global_invocation_id) global_id: vec3<u32>
@@ -54,7 +49,6 @@ fn main(
 
     // TODO: Frustum culling logic goes here
     var is_visible = true;
-
     if !is_visible {
         return;
     }

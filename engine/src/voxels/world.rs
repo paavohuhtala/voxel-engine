@@ -19,6 +19,14 @@ impl World {
         }
     }
 
+    pub fn from_chunks(chunks: Vec<(ChunkPos, Chunk)>) -> Self {
+        let chunks = chunks.into_iter().collect::<DashMap<ChunkPos, Chunk>>();
+        World {
+            chunks,
+            modified_chunks: DashSet::new(),
+        }
+    }
+
     pub fn set_voxel(&self, position: WorldPos, voxel: Voxel) {
         let chunk_id = position.to_chunk_pos();
         let mut chunk = self

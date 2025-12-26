@@ -6,7 +6,7 @@ use std::{
 
 use bytemuck::Pod;
 
-use crate::rendering::memory::buddy_allocator::{AllocatorConfig, BuddyAllocator};
+use crate::rendering::memory::buddy_allocator::{AllocatorConfig, BuddyAllocator, BuddyAllocatorStats};
 
 pub struct GpuHeapHandle<T> {
     byte_offset: u64,
@@ -129,6 +129,10 @@ impl<T> GpuHeap<T> {
 
     pub fn size(&self) -> u64 {
         self.allocator.read().unwrap().size()
+    }
+
+    pub fn get_stats(&self) -> BuddyAllocatorStats {
+        self.allocator.read().unwrap().get_stats()
     }
 }
 

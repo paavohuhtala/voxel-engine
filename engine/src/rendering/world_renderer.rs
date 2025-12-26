@@ -4,6 +4,7 @@ use bytemuck::{Pod, Zeroable};
 use dashmap::DashMap;
 use glam::Vec3;
 use log::log;
+use rayon::prelude::*;
 use wgpu::wgt::DrawIndexedIndirectArgs;
 
 use crate::{
@@ -82,15 +83,16 @@ impl WorldBuffers {
             align_of::<u16>() as u64,
             "World index buffer",
         );
+
+        let max_chunks = 32 * 32 * 32;
+
         let chunk_buffer = GpuPool::new(
             device,
             queue.clone(),
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            1024,
+            max_chunks,
             "World chunk buffer",
         );
-
-        let max_chunks = 1024;
 
         let culling_params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Culling params buffer"),
@@ -101,14 +103,14 @@ impl WorldBuffers {
 
         let input_chunk_ids = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Input chunk IDs buffer"),
-            size: (max_chunks * size_of::<u32>()) as u64,
+            size: (max_chunks * size_of::<u32>() as u64),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let draw_commands = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Draw commands buffer"),
-            size: (max_chunks * size_of::<DrawIndexedIndirectArgs>()) as u64,
+            size: (max_chunks * size_of::<DrawIndexedIndirectArgs>() as u64),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
             mapped_at_creation: false,
         });
@@ -147,8 +149,8 @@ impl WorldBuffers {
             .expect("Failed to allocate index buffer for chunk mesh");
 
         log!(
-            log::Level::Info,
-            "allocated chunk mesh: {} vertices, {} indices. Vertex offset: {}, Index offset: {}",
+            log::Level::Debug,
+            "Allocated chunk mesh: {} vertices, {} indices. Vertex offset: {}, Index offset: {}",
             mesh_data.vertices.len(),
             mesh_data.indices.len(),
             vertex_allocation.byte_offset(),
@@ -179,11 +181,16 @@ pub struct WorldRenderer {
 
 impl WorldRenderer {
     // TODO: Make configurable at runtime?
-    pub const VERTEX_BUFFER_CAPACITY: u64 = 16 * 1024 * 1024; // 16 million vertices
-    pub const INDEX_BUFFER_CAPACITY: u64 = 32 * 1024 * 1024; // 32 million indices
+    pub const VERTEX_BUFFER_CAPACITY: u64 = size_of::<ChunkVertex>() as u64 * 16 * 1024 * 1024;
+    pub const INDEX_BUFFER_CAPACITY: u64 = size_of::<u16>() as u64 * 1024 * 1024 * 4;
 
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) -> Self {
-        let buffers = WorldBuffers::new(device, queue, 1024 * 1024, 1024 * 1024);
+        let buffers = WorldBuffers::new(
+            device,
+            queue,
+            Self::VERTEX_BUFFER_CAPACITY,
+            Self::INDEX_BUFFER_CAPACITY,
+        );
 
         let camera = Camera {
             eye: Vec3::new(64.0, 32.0, -32.0),
@@ -216,15 +223,20 @@ impl WorldRenderer {
         }
     }
 
-    fn create_render_chunk(&self, pos: ChunkPos, chunk: &Chunk) {
+    fn create_render_chunk(
+        buffers: &WorldBuffers,
+        render_chunks: &DashMap<ChunkPos, RenderChunk>,
+        pos: ChunkPos,
+        chunk: &Chunk,
+    ) {
         log!(
-            log::Level::Info,
+            log::Level::Debug,
             "Creating render chunk at position {:?}",
             pos
         );
 
         let mesh_data = generate_chunk_mesh_data(pos, chunk);
-        let chunk_mesh = self.buffers.initialize_chunk_mesh(&mesh_data);
+        let chunk_mesh = buffers.initialize_chunk_mesh(&mesh_data);
         // TODO: Proper AABB calculation
         let aabb = AABB::new(
             glam::Vec3::new(
@@ -238,11 +250,7 @@ impl WorldRenderer {
                 ((pos.z() + 1) * CHUNK_SIZE as i32) as f32,
             ),
         );
-        let gpu_chunk = self
-            .buffers
-            .chunks
-            .allocate()
-            .expect("Failed to allocate chunk");
+        let gpu_chunk = buffers.chunks.allocate().expect("Failed to allocate chunk");
 
         gpu_chunk.write_data(&GpuChunk {
             position_and_y_range: chunk_mesh.position_and_y_range,
@@ -259,19 +267,36 @@ impl WorldRenderer {
             mesh: Some(chunk_mesh),
             gpu_handle: gpu_chunk,
         };
-        self.render_chunks.insert(pos, render_chunk);
+        render_chunks.insert(pos, render_chunk);
     }
 
     pub fn create_all_chunks(&self, world: &World) {
         log!(
-            log::Level::Info,
+            log::Level::Debug,
             "Creating render chunks for all world chunks ({})",
             world.chunks.len()
         );
 
-        for item in world.chunks.iter() {
-            self.create_render_chunk(*item.key(), item.value());
-        }
+        let chunk_positions: Vec<ChunkPos> = world.chunks.iter().map(|item| *item.key()).collect();
+        let buffers = &self.buffers;
+        let render_chunks = &self.render_chunks;
+
+        chunk_positions.par_iter().for_each(|&pos| {
+            if let Some(chunk) = world.chunks.get(&pos) {
+                Self::create_render_chunk(buffers, render_chunks, pos, &chunk);
+            }
+        });
+
+        let vertex_buffer_stats = self.buffers.vertices.get_stats();
+        let index_buffer_stats = self.buffers.indices.get_stats();
+
+        log!(
+            log::Level::Info,
+            "WorldRenderer: Created {} render chunks. Vertex buffer stats: {:?}, Index buffer stats: {:?}",
+            self.render_chunks.len(),
+            vertex_buffer_stats,
+            index_buffer_stats
+        );
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {

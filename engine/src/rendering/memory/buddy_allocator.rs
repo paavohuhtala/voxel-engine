@@ -22,6 +22,17 @@ pub struct AllocatorConfig {
     pub min_order: u8,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct BuddyAllocatorStats {
+    pub total_bytes: u64,
+    pub allocated_bytes: u64,
+    pub free_bytes: u64,
+    pub largest_free_block_bytes: u64,
+    pub allocated_percentage: f32,
+    pub block_count: usize,
+    pub free_block_count: usize,
+}
+
 /// A simple Buddy allocator implementation to be used with external memory, primarily GPU buffers.
 pub struct BuddyAllocator {
     config: AllocatorConfig,
@@ -44,6 +55,43 @@ impl BuddyAllocator {
         BuddyAllocator {
             config,
             blocks: vec![initial_block],
+        }
+    }
+
+    pub fn get_stats(&self) -> BuddyAllocatorStats {
+        let mut allocated_bytes = 0;
+        let mut free_bytes = 0;
+        let mut free_block_count = 0;
+        let mut largest_free_block = 0;
+
+        for block in &self.blocks {
+            let size = block.size();
+            if block.is_free {
+                free_bytes += size;
+                free_block_count += 1;
+                if size > largest_free_block {
+                    largest_free_block = size;
+                }
+            } else {
+                allocated_bytes += size;
+            }
+        }
+
+        let total_bytes = self.config.total_size;
+        let allocated_percentage = if total_bytes > 0 {
+            (allocated_bytes as f64 / total_bytes as f64) as f32 * 100.0
+        } else {
+            0.0
+        };
+
+        BuddyAllocatorStats {
+            total_bytes,
+            allocated_bytes,
+            free_bytes,
+            largest_free_block_bytes: largest_free_block,
+            allocated_percentage,
+            block_count: self.blocks.len(),
+            free_block_count,
         }
     }
 

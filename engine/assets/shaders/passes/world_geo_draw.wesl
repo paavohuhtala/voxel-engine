@@ -1,4 +1,6 @@
 
+import package::common::chunk::Chunk;
+
 struct CameraUniform {
     view_proj: mat4x4<f32>
 }
@@ -8,13 +10,6 @@ var<uniform> camera: CameraUniform;
 
 @group(1) @binding(0)
 var<storage, read> chunks: array<Chunk>;
-
-struct Chunk {
-    position: vec4<i32>,
-    mesh_data_index_offset: u32,
-    mesh_data_index_count: u32,
-    mesh_data_vertex_offset: i32,
-}
 
 struct VertexInput {
     // Uint8x4 is represented as vec4<u32> in WGSL
@@ -81,7 +76,6 @@ fn get_uv(local_pos: vec3<u32>, face_idx: u32) -> vec2<f32> {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Draw voxel borders based
     var face_uv = fract(input.uv);
     var border_factor = 0.0;
     if (face_uv.x < 0.05 || face_uv.x > 0.95 || face_uv.y < 0.05 || face_uv.y > 0.95) {

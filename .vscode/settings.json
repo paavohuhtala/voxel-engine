@@ -1,4 +1,9 @@
 {
     "editor.formatOnSave": true,
-    "editor.formatOnType": true
+    "editor.formatOnType": true,
+    // Disable wgsl-analyzer, because it doesn't support WESL properly yet
+    "wgsl-analyzer.diagnostics.typeErrors": false,
+    "wgsl-analyzer.diagnostics.nagaParsingErrors": false,
+    "wgsl-analyzer.diagnostics.nagaValidationErrors": false,
+    "wgsl-analyzer.initializeStopped": true
 }

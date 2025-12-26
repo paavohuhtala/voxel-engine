@@ -75,6 +75,7 @@ impl GameWindow {
         );
 
         let world_renderer = WorldRenderer::new(&device, &queue, size.width, size.height);
+
         Ok(GameWindow {
             surface,
             device,
@@ -159,7 +160,7 @@ impl GameWindow {
                 .render(&mut encoder, &view, &self.depth_texture);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue.submit([encoder.finish()]);
         output.present();
 
         Ok(())

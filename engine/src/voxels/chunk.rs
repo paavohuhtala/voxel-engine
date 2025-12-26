@@ -33,6 +33,11 @@ impl Palette {
     }
 
     pub fn ensure_voxel_type(&mut self, voxel: Voxel) -> usize {
+        // If this is the first voxel type, ensure we've also defined AIR
+        if voxel != Voxel::AIR && self.voxel_types.is_empty() {
+            self.add_voxel_type(Voxel::AIR);
+        }
+
         if let Some(index) = self.voxel_types.iter().position(|&v| v == voxel) {
             return index;
         }
@@ -291,7 +296,7 @@ impl PackedChunk {
         LocalPos(U8Vec3 { x, y, z })
     }
 
-    pub fn from_voxel_data(voxels: &[Voxel]) -> Self {
+    pub fn pack(voxels: &[Voxel]) -> Self {
         assert!(
             voxels.len() == CHUNK_VOLUME,
             "Voxel slice must have exactly {} elements",
@@ -430,6 +435,17 @@ impl Chunk {
             }
         }
         neighbors
+    }
+
+    pub fn from_voxels(data: &[Voxel]) -> Self {
+        // If all voxels are the same, return a solid chunk
+        let first = data[0];
+        let all_same = data.iter().all(|&v| v == first);
+        if all_same {
+            Chunk::Solid(first)
+        } else {
+            Chunk::Packed(PackedChunk::pack(data))
+        }
     }
 }
 

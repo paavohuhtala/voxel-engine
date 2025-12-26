@@ -89,6 +89,8 @@ allow_warnings = true
 background = false
 on_change_strategy = "kill_then_restart"
 default_watch = true
+# Include shaders in the watch list until I reimplement hot-reloading properly
+watch = ["engine/assets/shaders/passes"]
 
 # Run your long-running application (eg server) and have the result displayed in bacon.
 # For programs that never stop (eg a server), `background` is set to false
