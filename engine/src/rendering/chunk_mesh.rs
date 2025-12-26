@@ -4,7 +4,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{IVec4, U8Vec4};
 use wgpu::{VertexAttribute, VertexBufferLayout};
 
-use crate::rendering::memory::gpu_heap::GpuHeapHandle;
+use crate::{rendering::memory::gpu_heap::GpuHeapHandle, voxels::coord::ChunkPos};
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Zeroable, Pod)]
@@ -58,6 +58,19 @@ pub struct ChunkMeshData {
 impl ChunkMeshData {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn from_position(pos: ChunkPos) -> Self {
+        ChunkMeshData {
+            position_and_y_range: pos.0.extend(0),
+            vertices: Vec::new(),
+            indices: Vec::new(),
+        }
+    }
+
+    pub fn set_y_range(&mut self, min_y: u8, max_y: u8) {
+        let packed_y_range = (min_y & 0x0F) | ((max_y & 0x0F) << 4);
+        self.position_and_y_range.w = packed_y_range as i32;
     }
 }
 

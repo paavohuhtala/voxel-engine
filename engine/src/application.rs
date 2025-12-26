@@ -14,7 +14,12 @@ use crate::{
         EngineConfig, create_window_attributes, get_engine_config, update_engine_config_file,
     },
     game_window::GameWindow,
-    voxels::{chunk::Chunk, coord::ChunkPos, voxel::Voxel, world::World},
+    voxels::{
+        chunk::Chunk,
+        coord::{ChunkPos, LocalPos},
+        voxel::Voxel,
+        world::World,
+    },
 };
 
 pub struct Application {
@@ -34,16 +39,36 @@ impl Application {
             },
         );
 
+        const HELLO: [[u8; 16]; 5] = [
+            [1, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1, 1],
+            [1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1],
+        ];
+
         let world = World::new();
-        world
-            .chunks
-            .insert(ChunkPos::new(0, 0, 0), Chunk::Solid(Voxel::STONE));
-        world
-            .chunks
-            .insert(ChunkPos::new(0, -1, 0), Chunk::Solid(Voxel::STONE));
-        world
-            .chunks
-            .insert(ChunkPos::new(1, 0, 0), Chunk::Solid(Voxel::STONE));
+        {
+            world
+                .chunks
+                .insert(ChunkPos::new(0, 0, 0), Chunk::Solid(Voxel::STONE));
+            world
+                .chunks
+                .insert(ChunkPos::new(1, 0, 0), Chunk::Solid(Voxel::STONE));
+            let mut binding = world
+                .chunks
+                .entry(ChunkPos::new(0, 1, 0))
+                .or_insert_with(|| Chunk::Solid(Voxel::AIR));
+            let chunk = binding.value_mut();
+
+            for (y, row) in HELLO.iter().enumerate() {
+                for (x, &value) in row.iter().enumerate() {
+                    if value != 0 {
+                        chunk.set_voxel(LocalPos::new(x as u8, 5 - y as u8, 0), Voxel::STONE);
+                    }
+                }
+            }
+        }
 
         Application {
             game_window: None,

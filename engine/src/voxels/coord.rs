@@ -46,6 +46,12 @@ impl LocalPos {
     }
 }
 
+impl From<U8Vec3> for LocalPos {
+    fn from(value: U8Vec3) -> Self {
+        LocalPos::new(value.x, value.y, value.z)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Coordinates identifying a chunk in chunk space (world coordinates divided by chunk size and floored)
 pub struct ChunkPos(pub IVec3);

@@ -1,6 +1,7 @@
 use bitfield_struct::bitfield;
 
 #[bitfield(u16, hash = true)]
+#[derive(PartialEq, Eq)]
 pub struct Voxel {
     #[bits(12)]
     pub block_type: u16,
@@ -30,11 +31,3 @@ impl Voxel {
         self.block_type() == 0
     }
 }
-
-impl PartialEq for Voxel {
-    fn eq(&self, other: &Self) -> bool {
-        self.into_bits() == other.into_bits()
-    }
-}
-
-impl Eq for Voxel {}

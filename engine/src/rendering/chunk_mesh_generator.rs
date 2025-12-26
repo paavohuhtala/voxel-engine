@@ -1,12 +1,12 @@
-// TODO: Replace with real implementation
-
-use glam::U8Vec3;
-
 use crate::{
-    rendering::chunk_mesh::{ChunkMeshData, ChunkVertex},
+    rendering::{
+        chunk_mesh::{ChunkMeshData, ChunkVertex},
+        mesh_generations::greedy_mesher::GreedyMesher,
+    },
     voxels::{
         chunk::{CHUNK_SIZE, Chunk},
         coord::ChunkPos,
+        face::Face,
         voxel::Voxel,
     },
 };
@@ -14,78 +14,36 @@ use crate::{
 pub fn generate_chunk_mesh_data(pos: ChunkPos, data: &Chunk) -> ChunkMeshData {
     match data {
         Chunk::Solid(solid_voxel) => generate_solid_chunk_mesh(pos, *solid_voxel),
-        Chunk::Packed(_packed) => unimplemented!(),
+        Chunk::Packed(packed) => {
+            // TODO: Reuse instance of GreedyMesher to avoid reallocating the mask and voxel buffer every time
+            let mut mesher = GreedyMesher::new();
+            mesher.generate_mesh(pos, packed)
+        }
     }
 }
 
-const CUBE_VERTICES: [[U8Vec3; 4]; 6] = [
-    // In order of the Face enum: Top, Bottom, Left, Right, Front, Back
-    [
-        // Top (Y+)
-        U8Vec3::new(0, 1, 0),
-        U8Vec3::new(0, 1, 1),
-        U8Vec3::new(1, 1, 1),
-        U8Vec3::new(1, 1, 0),
-    ],
-    [
-        // Bottom (Y-)
-        U8Vec3::new(0, 0, 0),
-        U8Vec3::new(1, 0, 0),
-        U8Vec3::new(1, 0, 1),
-        U8Vec3::new(0, 0, 1),
-    ],
-    [
-        // Left (X-)
-        U8Vec3::new(0, 0, 0),
-        U8Vec3::new(0, 0, 1),
-        U8Vec3::new(0, 1, 1),
-        U8Vec3::new(0, 1, 0),
-    ],
-    [
-        // Right (X+)
-        U8Vec3::new(1, 0, 1),
-        U8Vec3::new(1, 0, 0),
-        U8Vec3::new(1, 1, 0),
-        U8Vec3::new(1, 1, 1),
-    ],
-    [
-        // Front (Z+)
-        U8Vec3::new(0, 0, 1),
-        U8Vec3::new(1, 0, 1),
-        U8Vec3::new(1, 1, 1),
-        U8Vec3::new(0, 1, 1),
-    ],
-    [
-        // Back (Z-)
-        U8Vec3::new(1, 0, 0),
-        U8Vec3::new(0, 0, 0),
-        U8Vec3::new(0, 1, 0),
-        U8Vec3::new(1, 1, 0),
-    ],
+const FACES: [Face; 6] = [
+    Face::Top,
+    Face::Bottom,
+    Face::Left,
+    Face::Right,
+    Face::Front,
+    Face::Back,
 ];
 
-const FACE_INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
-
 fn generate_solid_chunk_mesh(pos: ChunkPos, voxel: Voxel) -> ChunkMeshData {
-    // If the chunk is solid, create a cube mesh filled with that voxel type
+    let mut mesh_data = ChunkMeshData::from_position(pos);
+
     if voxel == Voxel::AIR {
-        // A chunk full of air does not need any mesh data
-        return ChunkMeshData {
-            position_and_y_range: pos.0.extend(0),
-            vertices: Vec::new(),
-            indices: Vec::new(),
-        };
+        return mesh_data;
     }
 
-    let mut vertices = Vec::with_capacity(8);
-    let mut indices = Vec::with_capacity(36);
-
-    for (face_id, face_vertices) in CUBE_VERTICES.iter().enumerate() {
-        for &vertex in face_vertices.iter() {
+    for face in FACES {
+        for vertex in face.vertices() {
             // Add other metadata here if needed
-            let position = (vertex * CHUNK_SIZE as u8).extend(face_id as u8);
+            let position = (vertex * CHUNK_SIZE as u8).extend(face as u8);
 
-            vertices.push(ChunkVertex {
+            mesh_data.vertices.push(ChunkVertex {
                 position,
                 // TODO: Block type and material index do not necessarily match 1:1
                 material_index: voxel.block_type(),
@@ -93,20 +51,17 @@ fn generate_solid_chunk_mesh(pos: ChunkPos, voxel: Voxel) -> ChunkMeshData {
             });
         }
 
-        let start_index = (face_id * 4) as u16;
-        for &index in FACE_INDICES.iter() {
-            indices.push(start_index + index);
-        }
+        let start_index = (face as u16 * 4) as u16;
+        mesh_data
+            .indices
+            .extend_from_slice(&face.indices_ccw(start_index));
     }
 
     // This is a full chunk, so y range is 0 to CHUNK_SIZE
     let y_range = create_packed_y_range(0, CHUNK_SIZE as u8);
 
-    ChunkMeshData {
-        position_and_y_range: pos.0.extend(y_range as i32),
-        vertices,
-        indices,
-    }
+    mesh_data.position_and_y_range = pos.0.extend(y_range as i32);
+    mesh_data
 }
 
 /// Packs minimum and maximum y values into a single u8

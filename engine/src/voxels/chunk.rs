@@ -253,6 +253,9 @@ impl PackedChunk {
         })
     }
 
+    /**
+     * Unpack the chunk into a flat vector of voxels in YZX order
+     */
     pub fn unpack(&self, voxels: &mut Vec<Voxel>) {
         voxels.extend(self.iter_voxels().map(|(_, voxel)| voxel));
     }

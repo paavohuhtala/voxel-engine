@@ -1,6 +1,7 @@
 pub mod chunk_mesh;
 pub mod chunk_mesh_generator;
 pub mod memory;
+pub mod mesh_generations;
 pub mod passes;
 pub mod render_camera;
 pub mod resolution;
