@@ -54,12 +54,23 @@ impl GameWindow {
             .copied()
             .unwrap_or(surface_capabilities.formats[0]);
 
+        let present_mode = {
+            #[cfg(feature = "superluminal")]
+            {
+                wgpu::PresentMode::AutoNoVsync
+            }
+            #[cfg(not(feature = "superluminal"))]
+            {
+                wgpu::PresentMode::AutoVsync
+            }
+        };
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode,
             alpha_mode: surface_capabilities.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -89,15 +100,14 @@ impl GameWindow {
         })
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if width > 0 && height > 0 {
-            self.config.width = width;
-            self.config.height = height;
+    pub fn resize(&mut self, size: Resolution) {
+        if size.width > 0 && size.height > 0 {
+            self.config.width = size.width;
+            self.config.height = size.height;
             self.surface.configure(&self.device, &self.config);
-            self.depth_texture
-                .resize(&self.device, winit::dpi::PhysicalSize { width, height });
+            self.depth_texture.resize(&self.device, size);
             self.is_surface_configured = true;
-            self.world_renderer.resize(width, height);
+            self.world_renderer.resize(size);
         } else {
             self.is_surface_configured = false;
         }
@@ -114,7 +124,10 @@ impl GameWindow {
         let output = match self.surface.get_current_texture() {
             Ok(output) => output,
             Err(wgpu::SurfaceError::Lost) => {
-                self.resize(self.config.width, self.config.height);
+                self.resize(Resolution {
+                    width: self.config.width,
+                    height: self.config.height,
+                });
                 return Ok(());
             }
             Err(wgpu::SurfaceError::Outdated) => return Ok(()),
@@ -144,7 +157,7 @@ impl GameWindow {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: self.depth_texture.view(),
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -162,6 +175,7 @@ impl GameWindow {
 
         self.queue.submit([encoder.finish()]);
         output.present();
+        profiling::finish_frame!();
 
         Ok(())
     }

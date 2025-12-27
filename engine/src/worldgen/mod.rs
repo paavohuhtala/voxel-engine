@@ -42,9 +42,9 @@ pub fn generate_noise_world() -> World {
         // Data is stored in YZX order
         for x in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
-                let pos = (origin_pos + DVec2::new(x as f64, z as f64)) * 0.04;
+                let pos = (origin_pos + DVec2::new(x as f64, z as f64)) * 0.01;
                 let height = (noise.get(pos.to_array()) + 1.0) / 2.0;
-                let height = (height * 8.0) as i32;
+                let height = (height * 15.0) as i32;
                 for y in 0..CHUNK_SIZE {
                     let voxel = if y as i32 <= height {
                         Voxel::STONE
@@ -63,7 +63,7 @@ pub fn generate_noise_world() -> World {
         Chunk::from_voxels(&voxels)
     }
 
-    let chunk_range = -16..16;
+    let chunk_range = -32..32;
     let range_width = chunk_range.end - chunk_range.start;
 
     let chunks = (0..(range_width * range_width))

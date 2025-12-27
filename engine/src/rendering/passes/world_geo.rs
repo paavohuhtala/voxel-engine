@@ -4,7 +4,8 @@ use wgpu::{
 };
 
 use crate::rendering::{
-    chunk_mesh::ChunkVertex, texture::DepthTexture, util::bind_group_builder::BindGroupBuilder,
+    chunk_mesh::ChunkVertex, memory::typed_buffer::GpuBuffer, render_camera::CameraUniform,
+    texture::DepthTexture, util::bind_group_builder::BindGroupBuilder,
 };
 
 pub struct WorldGeometryPass {
@@ -24,7 +25,7 @@ pub struct WorldGeometryPass {
 impl WorldGeometryPass {
     pub fn new(
         device: &wgpu::Device,
-        camera_uniform_buffer: &wgpu::Buffer,
+        camera_uniform_buffer: &GpuBuffer<CameraUniform>,
         chunks_buffer: &wgpu::Buffer,
         culling_params_buffer: &wgpu::Buffer,
         input_chunk_ids_buffer: &wgpu::Buffer,
@@ -38,7 +39,9 @@ impl WorldGeometryPass {
                 .uniform(
                     0,
                     "Camera uniform buffer",
-                    wgpu::BindingResource::Buffer(camera_uniform_buffer.as_entire_buffer_binding()),
+                    wgpu::BindingResource::Buffer(
+                        camera_uniform_buffer.inner().as_entire_buffer_binding(),
+                    ),
                 )
                 .build(device);
 
@@ -101,6 +104,7 @@ impl WorldGeometryPass {
         }
     }
 
+    #[profiling::function]
     pub fn cull_chunks(&self, encoder: &mut wgpu::CommandEncoder, chunk_count: u32) {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("World geometry culling pass"),
@@ -116,6 +120,7 @@ impl WorldGeometryPass {
         compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
     }
 
+    #[profiling::function]
     pub fn draw_chunks(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -244,7 +249,7 @@ fn create_draw_pipeline(
         depth_stencil: Some(DepthStencilState {
             format: DepthTexture::DEPTH_FORMAT,
             depth_write_enabled: true,
-            depth_compare: CompareFunction::Less,
+            depth_compare: CompareFunction::GreaterEqual,
             stencil: Default::default(),
             bias: Default::default(),
         }),

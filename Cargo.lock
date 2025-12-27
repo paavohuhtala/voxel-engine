@@ -586,6 +586,7 @@ dependencies = [
  "noise",
  "pollster",
  "pretty_env_logger",
+ "profiling",
  "rayon",
  "ron",
  "serde",
@@ -1709,6 +1710,20 @@ name = "profiling"
 version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eb8486b569e12e2c32ad3e204dbaba5e4b5b216e9367044f25f1dba42341773"
+dependencies = [
+ "profiling-procmacros",
+ "superluminal-perf",
+]
+
+[[package]]
+name = "profiling-procmacros"
+version = "1.0.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52717f9a02b6965224f95ca2a81e2e0c5c43baacd28ca057577988930b6c3d5b"
+dependencies = [
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "quick-xml"
@@ -2092,6 +2107,21 @@ dependencies = [
  "phf_shared",
  "precomputed-hash",
 ]
+
+[[package]]
+name = "superluminal-perf"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f25a01f65079fdaf562930db1293d7a4abd4d98346a450cb7f37073af5c2b10"
+dependencies = [
+ "superluminal-perf-sys",
+]
+
+[[package]]
+name = "superluminal-perf-sys"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c83d163f90b68349a742c75793727483b4d90a7bc77b7db434c79650f0b127e7"
 
 [[package]]
 name = "syn"

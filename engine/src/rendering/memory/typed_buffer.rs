@@ -6,13 +6,15 @@ use bytemuck::Pod;
 #[derive(Debug, Clone)]
 pub struct GpuBuffer<T> {
     inner: wgpu::Buffer,
+    queue: wgpu::Queue,
     _marker: PhantomData<T>,
 }
 
 impl<T> GpuBuffer<T> {
-    pub fn from_buffer(buffer: wgpu::Buffer) -> Self {
+    pub fn from_buffer(queue: &wgpu::Queue, buffer: wgpu::Buffer) -> Self {
         GpuBuffer {
             inner: buffer,
+            queue: queue.clone(),
             _marker: PhantomData,
         }
     }
@@ -23,9 +25,9 @@ impl<T> GpuBuffer<T> {
 }
 
 impl<T: Pod> GpuBuffer<T> {
-    pub fn write_data(&self, queue: &wgpu::Queue, data: &T) {
+    pub fn write_data(&self, data: &T) {
         let byte_data: &[u8] = bytemuck::bytes_of(data);
-        queue.write_buffer(&self.inner, 0, byte_data);
+        self.queue.write_buffer(&self.inner, 0, byte_data);
     }
 }
 
@@ -33,13 +35,15 @@ impl<T: Pod> GpuBuffer<T> {
 #[derive(Debug, Clone)]
 pub struct GpuBufferArray<T> {
     inner: wgpu::Buffer,
+    queue: wgpu::Queue,
     _marker: PhantomData<T>,
 }
 
 impl<T> GpuBufferArray<T> {
-    pub fn from_buffer(buffer: wgpu::Buffer) -> Self {
+    pub fn from_buffer(queue: &wgpu::Queue, buffer: wgpu::Buffer) -> Self {
         GpuBufferArray {
             inner: buffer,
+            queue: queue.clone(),
             _marker: PhantomData,
         }
     }
@@ -58,8 +62,8 @@ impl<T> GpuBufferArray<T> {
 }
 
 impl<T: Pod> GpuBufferArray<T> {
-    pub fn write_data(&self, queue: &wgpu::Queue, data: &[T]) {
+    pub fn write_data(&self, data: &[T]) {
         let byte_data: &[u8] = bytemuck::cast_slice(data);
-        queue.write_buffer(&self.inner, 0, byte_data);
+        self.queue.write_buffer(&self.inner, 0, byte_data);
     }
 }

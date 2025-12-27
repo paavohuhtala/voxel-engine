@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 engine = { path = "../engine" }
 anyhow = "1"
+
+[features]
+superluminal = ["engine/superluminal"]

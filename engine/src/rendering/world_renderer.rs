@@ -18,10 +18,11 @@ use crate::{
             gpu_pool::{GpuPool, GpuPoolHandle},
             typed_buffer::{GpuBuffer, GpuBufferArray},
         },
-        passes::world_geo::WorldGeometryPass,
+        passes::{sky::SkyPass, world_geo::WorldGeometryPass},
+        postfx::PostFxRenderer,
         render_camera::RenderCamera,
         resolution::Resolution,
-        texture::DepthTexture,
+        texture::{DepthTexture, Texture},
     },
     voxels::{
         chunk::{CHUNK_SIZE, Chunk},
@@ -128,10 +129,10 @@ impl WorldBuffers {
             vertices: Arc::new(vertex_buffer),
             indices: Arc::new(index_buffer),
             chunks: Arc::new(chunk_buffer),
-            culling_params: GpuBuffer::from_buffer(culling_params),
-            input_chunk_ids: GpuBufferArray::from_buffer(input_chunk_ids),
-            draw_commands: GpuBufferArray::from_buffer(draw_commands),
-            draw_count: GpuBuffer::from_buffer(draw_count),
+            culling_params: GpuBuffer::from_buffer(queue, culling_params),
+            input_chunk_ids: GpuBufferArray::from_buffer(queue, input_chunk_ids),
+            draw_commands: GpuBufferArray::from_buffer(queue, draw_commands),
+            draw_count: GpuBuffer::from_buffer(queue, draw_count),
         }
     }
 
@@ -174,15 +175,19 @@ pub struct WorldRenderer {
     queue: wgpu::Queue,
     buffers: WorldBuffers,
     render_chunks: DashMap<ChunkPos, RenderChunk>,
-    pass: WorldGeometryPass,
+    sky_pass: SkyPass,
+    world_geo_pass: WorldGeometryPass,
     pub camera: RenderCamera,
     camera_angle: f32,
+    scene_texture: Texture,
+    post_fx: PostFxRenderer,
+    time: f32,
 }
 
 impl WorldRenderer {
     // TODO: Make configurable at runtime?
     pub const VERTEX_BUFFER_CAPACITY: u64 = size_of::<ChunkVertex>() as u64 * 16 * 1024 * 1024;
-    pub const INDEX_BUFFER_CAPACITY: u64 = size_of::<u16>() as u64 * 1024 * 1024 * 4;
+    pub const INDEX_BUFFER_CAPACITY: u64 = size_of::<u16>() as u64 * 1024 * 1024 * 16;
 
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) -> Self {
         let buffers = WorldBuffers::new(
@@ -198,9 +203,11 @@ impl WorldRenderer {
             up: Vec3::Y,
         };
         let resolution = Resolution { width, height };
-        let render_camera = RenderCamera::new(device, camera, resolution);
+        let render_camera = RenderCamera::new(device, queue, camera, resolution);
 
-        let pass = WorldGeometryPass::new(
+        let sky_pass = SkyPass::new(device, &render_camera.uniform_buffer);
+
+        let world_geo_pass = WorldGeometryPass::new(
             device,
             &render_camera.uniform_buffer,
             buffers.chunks.buffer(),
@@ -212,14 +219,47 @@ impl WorldRenderer {
             &buffers.indices.buffer(),
         );
 
+        let scene_texture = Texture::from_descriptor(
+            device,
+            wgpu::TextureDescriptor {
+                label: Some("Scene texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            None,
+        );
+
+        let post_fx = PostFxRenderer::new(
+            device,
+            queue,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            &scene_texture.view,
+            width,
+            height,
+        );
+
         Self {
             device: device.clone(),
             queue: queue.clone(),
             buffers,
             render_chunks: DashMap::new(),
-            pass,
+            sky_pass,
+            world_geo_pass,
             camera: render_camera,
             camera_angle: 0.0,
+            scene_texture,
+            post_fx,
+            time: 0.0,
         }
     }
 
@@ -299,17 +339,21 @@ impl WorldRenderer {
         );
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) {
-        self.camera.update_resolution(Resolution { width, height });
+    pub fn resize(&mut self, size: Resolution) {
+        self.camera.update_resolution(size);
+        self.scene_texture.resize(&self.device, size);
+        self.post_fx.resize(size, &self.scene_texture.view);
     }
 
+    #[profiling::function]
     pub fn render(
-        &self,
+        &mut self,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         depth_texture: &DepthTexture,
     ) {
-        self.camera.update_uniform_buffer(&self.queue);
+        self.camera.update_uniform_buffer();
+        self.post_fx.update(self.time);
 
         // Add all chunk IDs to the input buffer for culling
         // TODO: Reuse allocation
@@ -320,34 +364,38 @@ impl WorldRenderer {
             .collect();
 
         // Reset draw count
-        self.buffers.draw_count.write_data(&self.queue, &0u32);
+        self.buffers.draw_count.write_data(&0u32);
 
         // Update culling params
         let culling_params = CullingParams {
             input_chunk_count: chunk_ids.len() as u32,
         };
-        self.buffers
-            .culling_params
-            .write_data(&self.queue, &culling_params);
+        self.buffers.culling_params.write_data(&culling_params);
         // Copy chunk IDs to GPU
-        self.buffers
-            .input_chunk_ids
-            .write_data(&self.queue, &chunk_ids);
-
+        self.buffers.input_chunk_ids.write_data(&chunk_ids);
         // Perform culling pass
-        self.pass
+        self.world_geo_pass
             .cull_chunks(encoder, culling_params.input_chunk_count);
 
+        // Render sky
+        self.sky_pass.render(encoder, &self.scene_texture.view);
+
         // Render visible chunks
-        self.pass.draw_chunks(
+        self.world_geo_pass.draw_chunks(
             encoder,
-            view,
+            &self.scene_texture.view,
             depth_texture,
             culling_params.input_chunk_count,
         );
+
+        // Render PostFX
+        self.post_fx.render(encoder, view);
     }
 
+    #[profiling::function]
     pub fn update(&mut self, delta_time: Duration) {
+        self.time += delta_time.as_secs_f32();
+
         // Rotate camera around the origin
         let rotation_speed = 0.5; // Radians per second
         self.camera_angle += rotation_speed * delta_time.as_secs_f32();
@@ -359,7 +407,7 @@ impl WorldRenderer {
                 32.0,
                 radius * self.camera_angle.sin(),
             ),
-            target: Vec3::splat(CHUNK_SIZE as f32) / 2.0,
+            target: Vec3::splat(CHUNK_SIZE as f32 / 2.0),
             up: Vec3::Y,
         });
     }

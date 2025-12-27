@@ -1,28 +1,57 @@
 use std::cell::{Cell, Ref, RefCell};
 
-use glam::{Mat4, Vec2};
-use wgpu::util::DeviceExt;
+use bytemuck::{Pod, Zeroable};
+use glam::{Mat4, Vec2, Vec3, Vec4};
+use wgpu::BufferDescriptor;
 
-use crate::{camera::Camera, rendering::resolution::Resolution};
+use crate::{
+    camera::Camera,
+    rendering::{memory::typed_buffer::GpuBuffer, resolution::Resolution},
+};
+
+#[repr(C)]
+#[derive(Copy, Clone, Zeroable, Pod)]
+pub struct CameraUniform {
+    view_proj: Mat4,
+    view_proj_inverse: Mat4,
+    // w is unused in both vectors, included for alignment
+    camera_position: Vec4,
+    sun_direction: Vec4,
+}
 
 pub struct RenderCamera {
     camera: Camera,
+    pub sun_direction: Vec3,
     resolution: Resolution,
     view_proj: RefCell<Mat4>,
     is_dirty: Cell<bool>,
     should_update_uniform: Cell<bool>,
-    pub uniform_buffer: wgpu::Buffer,
+    pub uniform_buffer: GpuBuffer<CameraUniform>,
 }
 
 impl RenderCamera {
-    pub fn new(device: &wgpu::Device, camera: Camera, resolution: Resolution) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        camera: Camera,
+        resolution: Resolution,
+    ) -> Self {
         let matrix =
             camera.get_vp_matrix(Vec2::new(resolution.width as f32, resolution.height as f32));
 
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let uniform_buffer = device.create_buffer(&BufferDescriptor {
+            size: size_of::<CameraUniform>() as u64,
+            mapped_at_creation: false,
             label: Some("Camera uniform buffer"),
-            contents: bytemuck::cast_slice(&[matrix]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let uniform_buffer = GpuBuffer::from_buffer(queue, uniform_buffer);
+        uniform_buffer.write_data(&CameraUniform {
+            view_proj: matrix,
+            view_proj_inverse: matrix.inverse(),
+            camera_position: Vec4::ZERO,
+            sun_direction: Vec4::ZERO,
         });
 
         Self {
@@ -32,6 +61,7 @@ impl RenderCamera {
             is_dirty: Cell::new(true),
             should_update_uniform: Cell::new(true),
             uniform_buffer,
+            sun_direction: Vec3::new(0.0, -1.0, 0.0),
         }
     }
 
@@ -69,14 +99,20 @@ impl RenderCamera {
         self.view_proj.borrow()
     }
 
-    pub fn update_uniform_buffer(&self, queue: &wgpu::Queue) {
+    pub fn update_uniform_buffer(&self) {
         if !self.should_update_uniform.get() {
             return;
         }
 
         let view_proj = *self.get_view_proj();
 
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[view_proj]));
+        self.uniform_buffer.write_data(&CameraUniform {
+            view_proj,
+            // TODO: Cache inverse matrix
+            view_proj_inverse: view_proj.inverse(),
+            camera_position: self.camera.eye.extend(0.0),
+            sun_direction: self.sun_direction.extend(0.0),
+        });
 
         self.should_update_uniform.set(false);
     }

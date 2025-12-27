@@ -104,7 +104,7 @@ impl ApplicationHandler<GameWindow> for Application {
             WindowEvent::Resized(size) => {
                 self.engine_config.window_size = Some((size.width, size.height));
                 self.config_debouncer.put(self.engine_config.clone());
-                game_window.resize(size.width, size.height);
+                game_window.resize(size);
             }
             WindowEvent::Moved(position) => {
                 if game_window.is_minimized() {

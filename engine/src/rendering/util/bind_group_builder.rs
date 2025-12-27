@@ -15,6 +15,8 @@ struct BindingConfig<'a> {
 enum BindingConfigType {
     // This could be extended to support more types
     Buffer(wgpu::BufferBindingType),
+    Texture(wgpu::TextureSampleType, wgpu::TextureViewDimension),
+    Sampler(wgpu::SamplerBindingType),
 }
 
 impl<'a> BindGroupBuilder<'a> {
@@ -78,6 +80,41 @@ impl<'a> BindGroupBuilder<'a> {
         self
     }
 
+    pub fn texture(
+        mut self,
+        index: u32,
+        name: impl Into<String>,
+        resource: wgpu::BindingResource<'a>,
+        sample_type: wgpu::TextureSampleType,
+    ) -> Self {
+        self.bindings.push(BindingConfig {
+            index,
+            _name: name.into(),
+            // Make dimension configurable if needed
+            binding_type: BindingConfigType::Texture(sample_type, wgpu::TextureViewDimension::D2),
+            count: None,
+            resource,
+        });
+        self
+    }
+
+    pub fn sampler(
+        mut self,
+        index: u32,
+        name: impl Into<String>,
+        resource: wgpu::BindingResource<'a>,
+        sampler_type: wgpu::SamplerBindingType,
+    ) -> Self {
+        self.bindings.push(BindingConfig {
+            index,
+            _name: name.into(),
+            binding_type: BindingConfigType::Sampler(sampler_type),
+            count: None,
+            resource,
+        });
+        self
+    }
+
     pub fn build(self, device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::BindGroup) {
         let layout_entries: Vec<wgpu::BindGroupLayoutEntry> = self
             .bindings
@@ -91,6 +128,16 @@ impl<'a> BindGroupBuilder<'a> {
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
+                    BindingConfigType::Texture(sample_type, dimension) => {
+                        wgpu::BindingType::Texture {
+                            sample_type: *sample_type,
+                            view_dimension: *dimension,
+                            multisampled: false,
+                        }
+                    }
+                    BindingConfigType::Sampler(sampler_type) => {
+                        wgpu::BindingType::Sampler(*sampler_type)
+                    }
                 },
                 count: binding.count,
             })

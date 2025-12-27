@@ -1,0 +1,4 @@
+[package]
+edition = "unstable_2025"
+
+root = "./engine/assets/shaders"
