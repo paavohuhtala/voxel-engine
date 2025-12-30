@@ -3,16 +3,17 @@ use std::{sync::Arc, time::Duration};
 use bytemuck::{Pod, Zeroable};
 use dashmap::DashMap;
 use glam::Vec3;
-use log::log;
 use rayon::prelude::*;
 use wgpu::wgt::DrawIndexedIndirectArgs;
 
 use crate::{
+    assets::blocks::BlockDatabase,
     camera::Camera,
     math::aabb::AABB,
     rendering::{
         chunk_mesh::{ChunkMesh, ChunkMeshData, ChunkVertex, GpuChunk},
         chunk_mesh_generator::generate_chunk_mesh_data,
+        material_manager::MaterialManager,
         memory::{
             gpu_heap::GpuHeap,
             gpu_pool::{GpuPool, GpuPoolHandle},
@@ -149,8 +150,7 @@ impl WorldBuffers {
             .allocate(mesh_data.indices.len() as u64)
             .expect("Failed to allocate index buffer for chunk mesh");
 
-        log!(
-            log::Level::Debug,
+        log::debug!(
             "Allocated chunk mesh: {} vertices, {} indices. Vertex offset: {}, Index offset: {}",
             mesh_data.vertices.len(),
             mesh_data.indices.len(),
@@ -182,6 +182,8 @@ pub struct WorldRenderer {
     scene_texture: Texture,
     post_fx: PostFxRenderer,
     time: f32,
+    block_database: Arc<BlockDatabase>,
+    pub material_manager: MaterialManager,
 }
 
 impl WorldRenderer {
@@ -189,7 +191,12 @@ impl WorldRenderer {
     pub const VERTEX_BUFFER_CAPACITY: u64 = size_of::<ChunkVertex>() as u64 * 16 * 1024 * 1024;
     pub const INDEX_BUFFER_CAPACITY: u64 = size_of::<u16>() as u64 * 1024 * 1024 * 16;
 
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        size: Resolution,
+        block_database: Arc<BlockDatabase>,
+    ) -> Self {
         let buffers = WorldBuffers::new(
             device,
             queue,
@@ -202,10 +209,11 @@ impl WorldRenderer {
             target: Vec3::new(0.0, 0.0, 0.0),
             up: Vec3::Y,
         };
-        let resolution = Resolution { width, height };
-        let render_camera = RenderCamera::new(device, queue, camera, resolution);
+        let render_camera = RenderCamera::new(device, queue, camera, size);
 
         let sky_pass = SkyPass::new(device, &render_camera.uniform_buffer);
+
+        let material_manager = MaterialManager::new(device, queue);
 
         let world_geo_pass = WorldGeometryPass::new(
             device,
@@ -217,6 +225,7 @@ impl WorldRenderer {
             &buffers.draw_count.inner(),
             &buffers.vertices.buffer(),
             &buffers.indices.buffer(),
+            &material_manager,
         );
 
         let scene_texture = Texture::from_descriptor(
@@ -224,8 +233,8 @@ impl WorldRenderer {
             wgpu::TextureDescriptor {
                 label: Some("Scene texture"),
                 size: wgpu::Extent3d {
-                    width,
-                    height,
+                    width: size.width,
+                    height: size.height,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -244,8 +253,7 @@ impl WorldRenderer {
             queue,
             wgpu::TextureFormat::Bgra8UnormSrgb,
             &scene_texture.view,
-            width,
-            height,
+            size,
         );
 
         Self {
@@ -260,22 +268,21 @@ impl WorldRenderer {
             scene_texture,
             post_fx,
             time: 0.0,
+            material_manager,
+            block_database: block_database.clone(),
         }
     }
 
     fn create_render_chunk(
+        block_database: &BlockDatabase,
         buffers: &WorldBuffers,
         render_chunks: &DashMap<ChunkPos, RenderChunk>,
         pos: ChunkPos,
         chunk: &Chunk,
     ) {
-        log!(
-            log::Level::Debug,
-            "Creating render chunk at position {:?}",
-            pos
-        );
+        log::debug!("Creating render chunk at position {:?}", pos);
 
-        let mesh_data = generate_chunk_mesh_data(pos, chunk);
+        let mesh_data = generate_chunk_mesh_data(block_database, pos, chunk);
         let chunk_mesh = buffers.initialize_chunk_mesh(&mesh_data);
         // TODO: Proper AABB calculation
         let aabb = AABB::new(
@@ -311,8 +318,7 @@ impl WorldRenderer {
     }
 
     pub fn create_all_chunks(&self, world: &World) {
-        log!(
-            log::Level::Debug,
+        log::debug!(
             "Creating render chunks for all world chunks ({})",
             world.chunks.len()
         );
@@ -321,18 +327,25 @@ impl WorldRenderer {
         let buffers = &self.buffers;
         let render_chunks = &self.render_chunks;
 
+        let block_database = self.block_database.clone();
+
         chunk_positions.par_iter().for_each(|&pos| {
             if let Some(chunk) = world.chunks.get(&pos) {
-                Self::create_render_chunk(buffers, render_chunks, pos, &chunk);
+                Self::create_render_chunk(
+                    block_database.as_ref(),
+                    buffers,
+                    render_chunks,
+                    pos,
+                    &chunk,
+                );
             }
         });
 
         let vertex_buffer_stats = self.buffers.vertices.get_stats();
         let index_buffer_stats = self.buffers.indices.get_stats();
 
-        log!(
-            log::Level::Info,
-            "WorldRenderer: Created {} render chunks. Vertex buffer stats: {:?}, Index buffer stats: {:?}",
+        log::info!(
+            "Created {} render chunks. Vertex buffer stats: {:?}, Index buffer stats: {:?}",
             self.render_chunks.len(),
             vertex_buffer_stats,
             index_buffer_stats

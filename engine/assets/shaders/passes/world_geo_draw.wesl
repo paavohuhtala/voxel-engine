@@ -7,6 +7,12 @@ var<uniform> camera: Camera;
 @group(1) @binding(0)
 var<storage, read> chunks: array<Chunk>;
 
+// Textures and sampler
+@group(2) @binding(0)
+var arrayTexture: texture_2d_array<f32>;
+@group(2) @binding(1)
+var arraySampler: sampler;
+
 struct VertexInput {
     // Uint8x4 is represented as vec4<u32> in WGSL
     // w contains face index (Top, Bottom, Left, Right, Front, Back)
@@ -20,6 +26,7 @@ struct VertexOutput {
     @location(0) normal: vec3<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) material_index: u32,
+    @location(3) light_factor: f32,
 }
 
 @vertex
@@ -42,6 +49,11 @@ fn vs_main(input: VertexInput, @builtin(instance_index) instance_idx: u32) -> Ve
     out.normal = normal;
     out.uv = uv;
     out.material_index = input.material_index;
+
+    // Calculate basic lighting from normal and camera.sun_direction
+    let light_dir = normalize(camera.sun_direction.xyz);
+    let light_intensity = max(dot(normal, light_dir), 0.1);
+    out.light_factor = light_intensity;
 
     return out;
 }
@@ -77,5 +89,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if (face_uv.x < 0.05 || face_uv.x > 0.95 || face_uv.y < 0.05 || face_uv.y > 0.95) {
         border_factor = 1.0;
     }
-    return vec4<f32>(abs(input.normal) * (1.0 - border_factor) + vec3<f32>(0.0, 0.0, 0.0) * border_factor, 1.0);
+
+    // Sample texture from array
+    var texture_color = textureSample(
+        arrayTexture,
+        arraySampler,
+        face_uv,
+        input.material_index
+    ).rgb * input.light_factor;
+
+    let final_color = mix(texture_color, texture_color * 0.8, border_factor);
+    return vec4<f32>(final_color, 1.0);
 }

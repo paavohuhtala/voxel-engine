@@ -3,6 +3,7 @@ pub struct Pool {
     free_indices: Vec<u64>,
     next_free_index: u64,
     capacity: u64,
+    used: u64,
 }
 
 impl Pool {
@@ -11,10 +12,13 @@ impl Pool {
             free_indices: Vec::new(),
             next_free_index: 0,
             capacity,
+            used: 0,
         }
     }
 
     pub fn allocate(&mut self) -> Option<u64> {
+        self.used += 1;
+
         // If there are any free indices, reuse one
         if let Some(index) = self.free_indices.pop() {
             return Some(index);
@@ -37,9 +41,14 @@ impl Pool {
             index
         );
         self.free_indices.push(index);
+        self.used -= 1;
     }
 
     pub fn capacity(&self) -> u64 {
         self.capacity
+    }
+
+    pub fn used(&self) -> u64 {
+        self.used
     }
 }

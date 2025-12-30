@@ -2,6 +2,8 @@ use glam::{DVec2, Vec3Swizzles};
 use noise::{NoiseFn, SuperSimplex};
 use rayon::prelude::*;
 
+pub mod text_generator;
+
 use crate::voxels::{
     chunk::{CHUNK_SIZE, CHUNK_VOLUME, Chunk},
     coord::{ChunkPos, WorldPos},
@@ -30,7 +32,7 @@ pub fn generate_basic_world() -> World {
     world
 }
 
-pub fn generate_noise_world() -> World {
+pub fn generate_noise_world(size: i32) -> World {
     let noise = SuperSimplex::new(123_456);
 
     fn generate_chunk(noise: &SuperSimplex, chunk_pos: ChunkPos) -> Chunk {
@@ -45,17 +47,27 @@ pub fn generate_noise_world() -> World {
                 let pos = (origin_pos + DVec2::new(x as f64, z as f64)) * 0.01;
                 let height = (noise.get(pos.to_array()) + 1.0) / 2.0;
                 let height = (height * 15.0) as i32;
+
+                let mut last_index = None;
+
                 for y in 0..CHUNK_SIZE {
                     let voxel = if y as i32 <= height {
-                        Voxel::STONE
+                        Voxel::DIRT
                     } else {
-                        Voxel::AIR
+                        // Air from now on
+                        break;
                     };
 
                     let index = (y as usize * CHUNK_SIZE as usize * CHUNK_SIZE as usize)
                         + (z as usize * CHUNK_SIZE as usize)
                         + x as usize;
                     voxels[index] = voxel;
+                    last_index = Some(index);
+                }
+
+                // Change the top voxel to grass if there was at least one voxel placed
+                if let Some(index) = last_index {
+                    voxels[index] = Voxel::GRASS;
                 }
             }
         }
@@ -63,7 +75,7 @@ pub fn generate_noise_world() -> World {
         Chunk::from_voxels(&voxels)
     }
 
-    let chunk_range = -32..32;
+    let chunk_range = -(size / 2)..(size / 2);
     let range_width = chunk_range.end - chunk_range.start;
 
     let chunks = (0..(range_width * range_width))

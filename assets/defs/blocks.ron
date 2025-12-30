@@ -1,0 +1,22 @@
+[
+    BlockDefinition(
+        id: 0,
+        name: "air",
+        textures: Invisible,
+    ),
+    BlockDefinition(
+        id: 1,
+        name: "grass",
+        textures: Single("grass.png"),
+    ),
+    BlockDefinition(
+        id: 2,
+        name: "dirt",
+        textures: Single("dirt.png"),
+    ),
+    BlockDefinition(
+        id: 3,
+        name: "gold",
+        textures: Single("gold.png"),
+    ),
+]

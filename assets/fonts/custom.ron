@@ -1,0 +1,15 @@
+FontDefinition(
+    id: "custom",
+    name: "Custom font",
+    glyphs: FixedSizeAtlas(
+        grid: (7, 7),
+        symbols: [
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖ",
+            "abcdefghijklmnopqrstuvwxyzåäö",
+            "0123456789,.!?-+;='/\\"
+        ],
+        overrides: Some({
+            " ": (width: 4)
+        })
+    )
+)

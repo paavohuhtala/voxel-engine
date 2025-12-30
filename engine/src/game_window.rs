@@ -1,10 +1,11 @@
-use std::{sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant, u16};
 
 use wgpu::{RenderPassDescriptor, wgt::CommandEncoderDescriptor};
 use winit::window::Window;
 
-use crate::rendering::{
-    resolution::Resolution, texture::DepthTexture, world_renderer::WorldRenderer,
+use crate::{
+    assets::blocks::BlockDatabase,
+    rendering::{resolution::Resolution, texture::DepthTexture, world_renderer::WorldRenderer},
 };
 
 pub struct GameWindow {
@@ -20,7 +21,10 @@ pub struct GameWindow {
 }
 
 impl GameWindow {
-    pub async fn new(window: Arc<Window>) -> anyhow::Result<Self> {
+    pub async fn new(
+        window: Arc<Window>,
+        block_database: Arc<BlockDatabase>,
+    ) -> anyhow::Result<Self> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let window_clone = window.clone();
@@ -40,7 +44,10 @@ impl GameWindow {
                     | wgpu::Features::TEXTURE_BINDING_ARRAY
                     | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                required_limits: wgpu::Limits::default(),
+                required_limits: wgpu::Limits {
+                    max_binding_array_elements_per_shader_stage: u16::MAX as u32,
+                    ..Default::default()
+                },
                 memory_hints: Default::default(),
                 trace: wgpu::Trace::Off,
             })
@@ -85,7 +92,7 @@ impl GameWindow {
             "Depth texture",
         );
 
-        let world_renderer = WorldRenderer::new(&device, &queue, size.width, size.height);
+        let world_renderer = WorldRenderer::new(&device, &queue, size, block_database.clone());
 
         Ok(GameWindow {
             surface,

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use debounce::EventDebouncer;
 use winit::{
@@ -10,17 +10,13 @@ use winit::{
 };
 
 use crate::{
+    assets::{blocks::BlockDatabase, fonts::load_font},
     config::{
         EngineConfig, create_window_attributes, get_engine_config, update_engine_config_file,
     },
     game_window::GameWindow,
-    voxels::{
-        chunk::{Chunk, PackedChunk},
-        coord::{ChunkPos, LocalPos},
-        voxel::Voxel,
-        world::World,
-    },
-    worldgen::generate_noise_world,
+    voxels::{coord::WorldPos, world::World},
+    worldgen::{generate_noise_world, text_generator::draw_text},
 };
 
 pub struct Application {
@@ -28,6 +24,7 @@ pub struct Application {
     engine_config: EngineConfig,
     config_debouncer: EventDebouncer<EngineConfig>,
     world: World,
+    block_database: Arc<BlockDatabase>,
 }
 
 impl Application {
@@ -40,34 +37,27 @@ impl Application {
             },
         );
 
-        const HELLO: [[u8; 16]; 5] = [
-            [1, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1, 1],
-            [1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
-            [1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
-            [1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
-            [1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1],
-        ];
+        let font = load_font(
+            PathBuf::try_from("assets/fonts").unwrap().as_path(),
+            "custom",
+        )
+        .expect("Failed to load font");
 
-        let world = generate_noise_world();
-        {
-            let mut chunk = Chunk::Packed(PackedChunk::new());
+        let mut block_database = BlockDatabase::new();
+        block_database
+            .load_all_blocks()
+            .expect("Failed to load block definitions");
+        let block_database = Arc::new(block_database);
 
-            for (y, row) in HELLO.iter().enumerate() {
-                for (x, &value) in row.iter().enumerate() {
-                    if value != 0 {
-                        chunk.set_voxel(LocalPos::new(x as u8, 5 - y as u8, 0), Voxel::STONE);
-                    }
-                }
-            }
-
-            world.chunks.insert(ChunkPos::new(0, 1, 0), chunk);
-        }
+        let world = generate_noise_world(8);
+        draw_text(&world, WorldPos::new(0, 16, 0), &font, "Hello, world!");
 
         Application {
             game_window: None,
             engine_config,
             config_debouncer,
             world,
+            block_database,
         }
     }
 }
@@ -76,12 +66,18 @@ impl ApplicationHandler<GameWindow> for Application {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window_attributes = create_window_attributes(&self.engine_config);
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-        self.game_window = Some(pollster::block_on(GameWindow::new(window)).unwrap());
-        self.game_window
-            .as_mut()
-            .unwrap()
+        let mut game_window =
+            pollster::block_on(GameWindow::new(window, self.block_database.clone()))
+                .expect("Failed to create the game window");
+
+        game_window
             .world_renderer
-            .create_all_chunks(&self.world);
+            .material_manager
+            .load_all_materials(self.block_database.iter_blocks())
+            .expect("Failed to load block materials");
+        game_window.world_renderer.create_all_chunks(&self.world);
+
+        self.game_window = Some(game_window);
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: GameWindow) {

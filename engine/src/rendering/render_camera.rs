@@ -1,7 +1,7 @@
 use std::cell::{Cell, Ref, RefCell};
 
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec2, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use wgpu::BufferDescriptor;
 
 use crate::{
@@ -61,7 +61,9 @@ impl RenderCamera {
             is_dirty: Cell::new(true),
             should_update_uniform: Cell::new(true),
             uniform_buffer,
-            sun_direction: Vec3::new(0.0, -1.0, 0.0),
+            sun_direction: Quat::from_rotation_x(-0.5)
+                .mul_vec3(Vec3::new(0.0, 1.0, 0.0))
+                .normalize(),
         }
     }
 

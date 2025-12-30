@@ -4,14 +4,16 @@ use wgpu::{
 };
 
 use crate::rendering::{
-    chunk_mesh::ChunkVertex, memory::typed_buffer::GpuBuffer, render_camera::CameraUniform,
-    texture::DepthTexture, util::bind_group_builder::BindGroupBuilder,
+    chunk_mesh::ChunkVertex, material_manager::MaterialManager, memory::typed_buffer::GpuBuffer,
+    render_camera::CameraUniform, texture::DepthTexture,
+    util::bind_group_builder::BindGroupBuilder,
 };
 
 pub struct WorldGeometryPass {
     camera_bind_group: BindGroup,
     chunks_bind_group: BindGroup,
     culling_bind_group: BindGroup,
+    textures_bind_group: BindGroup,
     culling_pipeline: ComputePipeline,
     draw_pipeline: RenderPipeline,
 
@@ -33,6 +35,7 @@ impl WorldGeometryPass {
         draw_count_buffer: &wgpu::Buffer,
         chunk_vertex_buffer: &wgpu::Buffer,
         chunk_index_buffer: &wgpu::Buffer,
+        material_manager: &MaterialManager,
     ) -> Self {
         let (camera_bind_group_layout, camera_bind_group) =
             BindGroupBuilder::new("camera", ShaderStages::VERTEX | ShaderStages::COMPUTE)
@@ -80,14 +83,35 @@ impl WorldGeometryPass {
                 )
                 .build(device);
 
+        let (textures_bind_group_layout, textures_bind_group) =
+            BindGroupBuilder::new("textures", ShaderStages::FRAGMENT)
+                .array_texture(
+                    0,
+                    "Material texture array",
+                    wgpu::BindingResource::TextureView(material_manager.array_texture_view()),
+                    wgpu::TextureSampleType::Float { filterable: true },
+                    material_manager.texture_capacity() as u32,
+                )
+                .sampler(
+                    1,
+                    "Material texture sampler",
+                    wgpu::BindingResource::Sampler(material_manager.sampler()),
+                    wgpu::SamplerBindingType::NonFiltering,
+                )
+                .build(device);
+
         let culling_pipeline = create_draw_command_pipeline(
             device,
             &camera_bind_group_layout,
             &chunks_bind_group_layout,
             &culling_bind_group_layout,
         );
-        let draw_pipeline =
-            create_draw_pipeline(device, &camera_bind_group_layout, &chunks_bind_group_layout);
+        let draw_pipeline = create_draw_pipeline(
+            device,
+            &camera_bind_group_layout,
+            &chunks_bind_group_layout,
+            &textures_bind_group_layout,
+        );
 
         Self {
             culling_pipeline,
@@ -95,6 +119,7 @@ impl WorldGeometryPass {
             camera_bind_group,
             chunks_bind_group,
             culling_bind_group,
+            textures_bind_group,
 
             chunk_vertex_buffer: chunk_vertex_buffer.clone(),
             chunk_index_buffer: chunk_index_buffer.clone(),
@@ -153,6 +178,7 @@ impl WorldGeometryPass {
         render_pass.set_pipeline(&self.draw_pipeline);
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
         render_pass.set_bind_group(1, &self.chunks_bind_group, &[]);
+        render_pass.set_bind_group(2, &self.textures_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.chunk_vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.chunk_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
 
@@ -205,6 +231,7 @@ fn create_draw_pipeline(
     device: &wgpu::Device,
     camera_bind_group_layout: &wgpu::BindGroupLayout,
     chunks_bind_group_layout: &wgpu::BindGroupLayout,
+    textures_bind_group_layout: &wgpu::BindGroupLayout,
 ) -> RenderPipeline {
     let source = include_str!(concat!(env!("OUT_DIR"), "/world_geo_draw.wgsl"));
     let module = device.create_shader_module(ShaderModuleDescriptor {
@@ -214,7 +241,11 @@ fn create_draw_pipeline(
 
     let draw_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("World geometry pipeline layout"),
-        bind_group_layouts: &[camera_bind_group_layout, chunks_bind_group_layout],
+        bind_group_layouts: &[
+            camera_bind_group_layout,
+            chunks_bind_group_layout,
+            textures_bind_group_layout,
+        ],
         ..Default::default()
     });
 

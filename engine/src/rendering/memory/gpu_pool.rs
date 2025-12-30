@@ -6,7 +6,7 @@ use std::{
 
 use bytemuck::Pod;
 
-use crate::rendering::memory::pool::Pool;
+use crate::memory::pool::Pool;
 
 pub struct GpuPoolHandle<T> {
     index: u64,

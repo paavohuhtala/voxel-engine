@@ -22,8 +22,7 @@ impl PostFxRenderer {
         queue: &wgpu::Queue,
         texture_format: wgpu::TextureFormat,
         input_view: &wgpu::TextureView,
-        width: u32,
-        height: u32,
+        size: Resolution,
     ) -> Self {
         let constants_buffer = PostFxConstantsBuffer::new(device, queue);
         let constants_buffer = Arc::new(constants_buffer);
@@ -35,8 +34,8 @@ impl PostFxRenderer {
             wgpu::TextureDescriptor {
                 label: Some("PostFX intermediate texture"),
                 size: wgpu::Extent3d {
-                    width,
-                    height,
+                    width: size.width,
+                    height: size.height,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,

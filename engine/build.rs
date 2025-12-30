@@ -1,7 +1,13 @@
-use wesl::Wesl;
+use wesl::{CompileOptions, Wesl};
 
 fn main() {
-    let wesl = Wesl::new("assets/shaders");
+    let mut wesl = Wesl::new("assets/shaders");
+
+    wesl.set_options(CompileOptions {
+        lazy: false,
+        ..Default::default()
+    });
+
     wesl.build_artifact(
         &"package::passes::world_geo_draw".parse().unwrap(),
         "world_geo_draw",

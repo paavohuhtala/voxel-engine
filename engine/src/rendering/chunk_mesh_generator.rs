@@ -1,4 +1,5 @@
 use crate::{
+    assets::blocks::BlockDatabase,
     rendering::{
         chunk_mesh::{ChunkMeshData, ChunkVertex},
         mesh_generations::greedy_mesher::GreedyMesher,
@@ -11,12 +12,16 @@ use crate::{
     },
 };
 
-pub fn generate_chunk_mesh_data(pos: ChunkPos, data: &Chunk) -> ChunkMeshData {
+pub fn generate_chunk_mesh_data(
+    block_database: &BlockDatabase,
+    pos: ChunkPos,
+    data: &Chunk,
+) -> ChunkMeshData {
     match data {
-        Chunk::Solid(solid_voxel) => generate_solid_chunk_mesh(pos, *solid_voxel),
+        Chunk::Solid(solid_voxel) => generate_solid_chunk_mesh(block_database, pos, *solid_voxel),
         Chunk::Packed(packed) => {
             // TODO: Reuse instance of GreedyMesher to avoid reallocating the mask and voxel buffer every time
-            let mut mesher = GreedyMesher::new();
+            let mut mesher = GreedyMesher::new(block_database);
             mesher.generate_mesh(pos, packed)
         }
     }
@@ -31,14 +36,37 @@ const FACES: [Face; 6] = [
     Face::Back,
 ];
 
-fn generate_solid_chunk_mesh(pos: ChunkPos, voxel: Voxel) -> ChunkMeshData {
+fn generate_solid_chunk_mesh(
+    block_database: &BlockDatabase,
+    pos: ChunkPos,
+    voxel: Voxel,
+) -> ChunkMeshData {
     let mut mesh_data = ChunkMeshData::from_position(pos);
 
     if voxel == Voxel::AIR {
         return mesh_data;
     }
 
+    let block = block_database.get_by_id(voxel.block_type_id());
+
+    let Some(block) = block else {
+        log::error!(
+            "Block type ID {:?} not found in database when generating solid chunk mesh. Treating as air.",
+            voxel.block_type_id()
+        );
+        return mesh_data;
+    };
+
+    let Some(texture_indices) = block.get_texture_indices() else {
+        log::error!(
+            "Block type ID {:?} has no texture indices when generating solid chunk mesh. Treating as air.",
+            voxel.block_type_id()
+        );
+        return mesh_data;
+    };
+
     for face in FACES {
+        let texture_index = texture_indices.get_face_index(face);
         for vertex in face.vertices() {
             // Add other metadata here if needed
             let position = (vertex * CHUNK_SIZE as u8).extend(face as u8);
@@ -46,7 +74,7 @@ fn generate_solid_chunk_mesh(pos: ChunkPos, voxel: Voxel) -> ChunkMeshData {
             mesh_data.vertices.push(ChunkVertex {
                 position,
                 // TODO: Block type and material index do not necessarily match 1:1
-                material_index: voxel.block_type(),
+                material_index: texture_index,
                 _padding: 0,
             });
         }

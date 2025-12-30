@@ -1,6 +1,7 @@
 pub mod chunk_mesh;
 pub mod chunk_mesh_generator;
 pub mod common;
+pub mod material_manager;
 pub mod memory;
 pub mod mesh_generations;
 pub mod passes;

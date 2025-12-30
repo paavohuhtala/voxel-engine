@@ -1,8 +1,10 @@
 pub mod application;
+pub mod assets;
 pub mod camera;
 pub mod config;
 pub mod game_window;
 pub mod math;
+pub mod memory;
 pub mod rendering;
 pub mod voxels;
 pub mod worldgen;

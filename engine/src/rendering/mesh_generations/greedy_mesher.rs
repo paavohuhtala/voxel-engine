@@ -1,4 +1,5 @@
 use crate::{
+    assets::blocks::BlockDatabase,
     math::axis::Axis,
     rendering::chunk_mesh::{ChunkMeshData, ChunkVertex},
     voxels::{
@@ -25,15 +26,17 @@ enum MaskEntry {
     Empty,
 }
 
-pub struct GreedyMesher {
+pub struct GreedyMesher<'a> {
+    block_database: &'a BlockDatabase,
     mask: Vec<MaskEntry>,
     voxels: Vec<Voxel>,
 }
 
-impl GreedyMesher {
-    pub fn new() -> Self {
+impl<'a> GreedyMesher<'a> {
+    pub fn new(block_database: &'a BlockDatabase) -> Self {
         const CHUNK_USIZE: usize = CHUNK_SIZE as usize;
         GreedyMesher {
+            block_database,
             mask: vec![MaskEntry::Empty; CHUNK_USIZE.pow(2)],
             voxels: Vec::with_capacity(CHUNK_USIZE.pow(3)),
         }
