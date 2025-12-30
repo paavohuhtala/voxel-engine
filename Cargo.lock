@@ -606,6 +606,7 @@ dependencies = [
  "image",
  "log",
  "noise",
+ "ordered-float",
  "pollster",
  "pretty_env_logger",
  "profiling",

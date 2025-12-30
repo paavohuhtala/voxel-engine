@@ -2,7 +2,10 @@ use std::ops::{Add, Sub};
 
 use glam::{IVec3, U8Vec3};
 
-use crate::voxels::{chunk::CHUNK_SIZE, face::Face};
+use crate::{
+    math::axis::Axis,
+    voxels::{chunk::CHUNK_SIZE, face::Face},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// A position of a voxel within a chunk
@@ -99,6 +102,32 @@ impl WorldPos {
 
     pub fn from_chunk_and_voxel(chunk_coord: ChunkPos, voxel_coord: LocalPos) -> Self {
         chunk_coord.origin() + WorldPos(voxel_coord.0.as_ivec3())
+    }
+
+    pub const fn get_axis(&self, axis: Axis) -> i32 {
+        match axis {
+            Axis::X => self.0.x,
+            Axis::Y => self.0.y,
+            Axis::Z => self.0.z,
+        }
+    }
+}
+
+impl From<IVec3> for WorldPos {
+    fn from(value: IVec3) -> Self {
+        WorldPos(value)
+    }
+}
+
+impl From<[i32; 3]> for WorldPos {
+    fn from(value: [i32; 3]) -> Self {
+        WorldPos(IVec3::from(value))
+    }
+}
+
+impl From<WorldPos> for [i32; 3] {
+    fn from(value: WorldPos) -> Self {
+        [value.0.x, value.0.y, value.0.z]
     }
 }
 

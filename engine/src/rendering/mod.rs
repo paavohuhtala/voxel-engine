@@ -1,7 +1,6 @@
 pub mod chunk_mesh;
 pub mod chunk_mesh_generator;
 pub mod common;
-pub mod material_manager;
 pub mod memory;
 pub mod mesh_generations;
 pub mod passes;
@@ -10,5 +9,6 @@ pub mod postfx_constants;
 pub mod render_camera;
 pub mod resolution;
 pub mod texture;
+pub mod texture_manager;
 pub mod util;
 pub mod world_renderer;

@@ -1,8 +1,8 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use bytemuck::{Pod, Zeroable};
-use dashmap::DashMap;
 use glam::Vec3;
+use ordered_float::OrderedFloat;
 use rayon::prelude::*;
 use wgpu::wgt::DrawIndexedIndirectArgs;
 
@@ -13,7 +13,6 @@ use crate::{
     rendering::{
         chunk_mesh::{ChunkMesh, ChunkMeshData, ChunkVertex, GpuChunk},
         chunk_mesh_generator::generate_chunk_mesh_data,
-        material_manager::MaterialManager,
         memory::{
             gpu_heap::GpuHeap,
             gpu_pool::{GpuPool, GpuPoolHandle},
@@ -24,6 +23,7 @@ use crate::{
         render_camera::RenderCamera,
         resolution::Resolution,
         texture::{DepthTexture, Texture},
+        texture_manager::TextureManager,
     },
     voxels::{
         chunk::{CHUNK_SIZE, Chunk},
@@ -174,7 +174,7 @@ pub struct WorldRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     buffers: WorldBuffers,
-    render_chunks: DashMap<ChunkPos, RenderChunk>,
+    render_chunks: HashMap<ChunkPos, RenderChunk>,
     sky_pass: SkyPass,
     world_geo_pass: WorldGeometryPass,
     pub camera: RenderCamera,
@@ -183,7 +183,7 @@ pub struct WorldRenderer {
     post_fx: PostFxRenderer,
     time: f32,
     block_database: Arc<BlockDatabase>,
-    pub material_manager: MaterialManager,
+    pub texture_manager: TextureManager,
 }
 
 impl WorldRenderer {
@@ -213,7 +213,7 @@ impl WorldRenderer {
 
         let sky_pass = SkyPass::new(device, &render_camera.uniform_buffer);
 
-        let material_manager = MaterialManager::new(device, queue);
+        let texture_manager = TextureManager::new(device, queue);
 
         let world_geo_pass = WorldGeometryPass::new(
             device,
@@ -225,7 +225,7 @@ impl WorldRenderer {
             &buffers.draw_count.inner(),
             &buffers.vertices.buffer(),
             &buffers.indices.buffer(),
-            &material_manager,
+            &texture_manager,
         );
 
         let scene_texture = Texture::from_descriptor(
@@ -260,7 +260,7 @@ impl WorldRenderer {
             device: device.clone(),
             queue: queue.clone(),
             buffers,
-            render_chunks: DashMap::new(),
+            render_chunks: HashMap::new(),
             sky_pass,
             world_geo_pass,
             camera: render_camera,
@@ -268,7 +268,7 @@ impl WorldRenderer {
             scene_texture,
             post_fx,
             time: 0.0,
-            material_manager,
+            texture_manager,
             block_database: block_database.clone(),
         }
     }
@@ -276,26 +276,18 @@ impl WorldRenderer {
     fn create_render_chunk(
         block_database: &BlockDatabase,
         buffers: &WorldBuffers,
-        render_chunks: &DashMap<ChunkPos, RenderChunk>,
         pos: ChunkPos,
         chunk: &Chunk,
-    ) {
+        world: &World,
+    ) -> (ChunkPos, RenderChunk) {
         log::debug!("Creating render chunk at position {:?}", pos);
 
-        let mesh_data = generate_chunk_mesh_data(block_database, pos, chunk);
+        let mesh_data = generate_chunk_mesh_data(block_database, pos, chunk, world);
         let chunk_mesh = buffers.initialize_chunk_mesh(&mesh_data);
         // TODO: Proper AABB calculation
         let aabb = AABB::new(
-            glam::Vec3::new(
-                (pos.x() * CHUNK_SIZE as i32) as f32,
-                (pos.y() * CHUNK_SIZE as i32) as f32,
-                (pos.z() * CHUNK_SIZE as i32) as f32,
-            ),
-            glam::Vec3::new(
-                ((pos.x() + 1) * CHUNK_SIZE as i32) as f32,
-                ((pos.y() + 1) * CHUNK_SIZE as i32) as f32,
-                ((pos.z() + 1) * CHUNK_SIZE as i32) as f32,
-            ),
+            pos.origin().0.as_vec3(),
+            pos.origin().0.as_vec3() + Vec3::splat(CHUNK_SIZE as f32),
         );
         let gpu_chunk = buffers.chunks.allocate().expect("Failed to allocate chunk");
 
@@ -314,10 +306,10 @@ impl WorldRenderer {
             mesh: Some(chunk_mesh),
             gpu_handle: gpu_chunk,
         };
-        render_chunks.insert(pos, render_chunk);
+        (pos, render_chunk)
     }
 
-    pub fn create_all_chunks(&self, world: &World) {
+    pub fn create_all_chunks(&mut self, world: &World) {
         log::debug!(
             "Creating render chunks for all world chunks ({})",
             world.chunks.len()
@@ -325,21 +317,32 @@ impl WorldRenderer {
 
         let chunk_positions: Vec<ChunkPos> = world.chunks.iter().map(|item| *item.key()).collect();
         let buffers = &self.buffers;
-        let render_chunks = &self.render_chunks;
 
         let block_database = self.block_database.clone();
 
-        chunk_positions.par_iter().for_each(|&pos| {
-            if let Some(chunk) = world.chunks.get(&pos) {
-                Self::create_render_chunk(
-                    block_database.as_ref(),
-                    buffers,
-                    render_chunks,
-                    pos,
-                    &chunk,
-                );
+        let render_chunks = chunk_positions
+            .par_iter()
+            .filter_map(|&pos| {
+                // Because chunks are stored in a DashMap, they could technically disapper while we're iterating
+                if let Some(chunk) = world.chunks.get(&pos) {
+                    Some(Self::create_render_chunk(
+                        block_database.as_ref(),
+                        buffers,
+                        pos,
+                        &chunk,
+                        world,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect_vec_list();
+
+        for vec in render_chunks {
+            for (pos, chunk) in vec {
+                self.render_chunks.insert(pos, chunk);
             }
-        });
+        }
 
         let vertex_buffer_stats = self.buffers.vertices.get_stats();
         let index_buffer_stats = self.buffers.indices.get_stats();
@@ -365,13 +368,23 @@ impl WorldRenderer {
         view: &wgpu::TextureView,
         depth_texture: &DepthTexture,
     ) {
+        let camera_pos = self.camera.camera.eye;
         self.camera.update_uniform_buffer();
         self.post_fx.update(self.time);
 
+        let mut render_chunks: Vec<&RenderChunk> = self.render_chunks.values().collect();
+
+        // Sort by distance to camera
+        // TODO: Sorting does literally nothing right now, because the culling compute shader runs in parallel
+        render_chunks.par_sort_by_cached_key(|chunk| {
+            let chunk_center = chunk.aabb.center();
+            let distance_sq = camera_pos.distance_squared(chunk_center);
+            OrderedFloat(distance_sq)
+        });
+
         // Add all chunk IDs to the input buffer for culling
         // TODO: Reuse allocation
-        let chunk_ids: Vec<u32> = self
-            .render_chunks
+        let chunk_ids: Vec<u32> = render_chunks
             .iter()
             .map(|chunk| chunk.gpu_handle.offset() as u32)
             .collect();
@@ -410,14 +423,14 @@ impl WorldRenderer {
         self.time += delta_time.as_secs_f32();
 
         // Rotate camera around the origin
-        let rotation_speed = 0.5; // Radians per second
+        let rotation_speed = -0.02; // Radians per second
         self.camera_angle += rotation_speed * delta_time.as_secs_f32();
-        let radius = 96.0;
+        let radius = 45.0;
 
         self.camera.update_camera(&Camera {
             eye: Vec3::new(
                 radius * self.camera_angle.cos(),
-                32.0,
+                16.0,
                 radius * self.camera_angle.sin(),
             ),
             target: Vec3::splat(CHUNK_SIZE as f32 / 2.0),

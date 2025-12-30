@@ -49,7 +49,7 @@ impl Application {
             .expect("Failed to load block definitions");
         let block_database = Arc::new(block_database);
 
-        let world = generate_noise_world(8);
+        let world = generate_noise_world(16);
         draw_text(&world, WorldPos::new(0, 16, 0), &font, "Hello, world!");
 
         Application {
@@ -72,8 +72,8 @@ impl ApplicationHandler<GameWindow> for Application {
 
         game_window
             .world_renderer
-            .material_manager
-            .load_all_materials(self.block_database.iter_blocks())
+            .texture_manager
+            .load_all_textures(self.block_database.iter_blocks())
             .expect("Failed to load block materials");
         game_window.world_renderer.create_all_chunks(&self.world);
 
@@ -123,6 +123,9 @@ impl ApplicationHandler<GameWindow> for Application {
             } => match (code, key_state) {
                 (KeyCode::Escape, ElementState::Pressed) => {
                     event_loop.exit();
+                }
+                (KeyCode::F2, ElementState::Pressed) => {
+                    game_window.world_renderer.camera.toggle_ao();
                 }
                 _ => {}
             },

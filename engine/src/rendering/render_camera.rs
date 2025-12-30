@@ -20,8 +20,9 @@ pub struct CameraUniform {
 }
 
 pub struct RenderCamera {
-    camera: Camera,
+    pub camera: Camera,
     pub sun_direction: Vec3,
+    pub enable_ao: bool,
     resolution: Resolution,
     view_proj: RefCell<Mat4>,
     is_dirty: Cell<bool>,
@@ -64,6 +65,7 @@ impl RenderCamera {
             sun_direction: Quat::from_rotation_x(-0.5)
                 .mul_vec3(Vec3::new(0.0, 1.0, 0.0))
                 .normalize(),
+            enable_ao: true,
         }
     }
 
@@ -113,9 +115,16 @@ impl RenderCamera {
             // TODO: Cache inverse matrix
             view_proj_inverse: view_proj.inverse(),
             camera_position: self.camera.eye.extend(0.0),
-            sun_direction: self.sun_direction.extend(0.0),
+            sun_direction: self
+                .sun_direction
+                .extend(if self.enable_ao { 1.0 } else { 0.0 }),
         });
 
         self.should_update_uniform.set(false);
+    }
+
+    pub fn toggle_ao(&mut self) {
+        self.enable_ao = !self.enable_ao;
+        self.invalidate();
     }
 }

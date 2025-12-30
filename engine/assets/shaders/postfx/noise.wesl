@@ -11,7 +11,7 @@ struct PostFxConstants {
 // Subtle noise / film grain post-process effect, mostly to reduce banding artifacts.
 @fragment
 fn fs_main(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
-    let noise_strength: f32 = 0.02;
+    let noise_strength: f32 = 0.002;
 
     let noise_value = rand(in.uv * vec2<f32>(800.0, 600.0) + constants.time * 10.0); 
     let noise_color = vec3<f32>(noise_value, noise_value, noise_value) * noise_strength;

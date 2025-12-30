@@ -4,8 +4,8 @@ use wgpu::{
 };
 
 use crate::rendering::{
-    chunk_mesh::ChunkVertex, material_manager::MaterialManager, memory::typed_buffer::GpuBuffer,
-    render_camera::CameraUniform, texture::DepthTexture,
+    chunk_mesh::ChunkVertex, memory::typed_buffer::GpuBuffer, render_camera::CameraUniform,
+    texture::DepthTexture, texture_manager::TextureManager,
     util::bind_group_builder::BindGroupBuilder,
 };
 
@@ -35,7 +35,7 @@ impl WorldGeometryPass {
         draw_count_buffer: &wgpu::Buffer,
         chunk_vertex_buffer: &wgpu::Buffer,
         chunk_index_buffer: &wgpu::Buffer,
-        material_manager: &MaterialManager,
+        material_manager: &TextureManager,
     ) -> Self {
         let (camera_bind_group_layout, camera_bind_group) =
             BindGroupBuilder::new("camera", ShaderStages::VERTEX | ShaderStages::COMPUTE)
@@ -87,16 +87,16 @@ impl WorldGeometryPass {
             BindGroupBuilder::new("textures", ShaderStages::FRAGMENT)
                 .array_texture(
                     0,
-                    "Material texture array",
+                    "World texture array",
                     wgpu::BindingResource::TextureView(material_manager.array_texture_view()),
                     wgpu::TextureSampleType::Float { filterable: true },
                     material_manager.texture_capacity() as u32,
                 )
                 .sampler(
                     1,
-                    "Material texture sampler",
+                    "World texture sampler",
                     wgpu::BindingResource::Sampler(material_manager.sampler()),
-                    wgpu::SamplerBindingType::NonFiltering,
+                    wgpu::SamplerBindingType::Filtering,
                 )
                 .build(device);
 

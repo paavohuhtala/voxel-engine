@@ -7,8 +7,9 @@ use crate::{
     voxels::{
         chunk::{CHUNK_SIZE, Chunk},
         coord::ChunkPos,
-        face::Face,
+        face::{Face, FaceDiagonal},
         voxel::Voxel,
+        world::World,
     },
 };
 
@@ -16,13 +17,14 @@ pub fn generate_chunk_mesh_data(
     block_database: &BlockDatabase,
     pos: ChunkPos,
     data: &Chunk,
+    world: &World,
 ) -> ChunkMeshData {
     match data {
         Chunk::Solid(solid_voxel) => generate_solid_chunk_mesh(block_database, pos, *solid_voxel),
         Chunk::Packed(packed) => {
             // TODO: Reuse instance of GreedyMesher to avoid reallocating the mask and voxel buffer every time
             let mut mesher = GreedyMesher::new(block_database);
-            mesher.generate_mesh(pos, packed)
+            mesher.generate_mesh(world, pos, packed)
         }
     }
 }
@@ -74,15 +76,16 @@ fn generate_solid_chunk_mesh(
             mesh_data.vertices.push(ChunkVertex {
                 position,
                 // TODO: Block type and material index do not necessarily match 1:1
-                material_index: texture_index,
-                _padding: 0,
+                texture_index,
+                // TODO: Ambient occlusion can still affect solid chunks
+                ambient_occlusion: 0,
             });
         }
 
         let start_index = (face as u16 * 4) as u16;
         mesh_data
             .indices
-            .extend_from_slice(&face.indices_ccw(start_index));
+            .extend_from_slice(&face.indices_ccw(start_index, FaceDiagonal::TopLeftToBottomRight));
     }
 
     // This is a full chunk, so y range is 0 to CHUNK_SIZE

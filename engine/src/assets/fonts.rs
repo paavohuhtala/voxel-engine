@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::Path};
 
 use anyhow::Context;
-use glam::{U8Vec4, UVec2};
+use glam::UVec2;
 use image::RgbaImage;
 use serde::Deserialize;
 

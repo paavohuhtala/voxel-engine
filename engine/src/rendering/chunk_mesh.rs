@@ -23,9 +23,10 @@ pub struct ChunkVertex {
     // Position in chunk space
     // x, y, z, face_id (3 bits), 5 bits unused
     pub position: U8Vec4,
-    // Index into global material buffer
-    pub material_index: u16,
-    pub _padding: u16,
+    // Index into global texture buffer
+    pub texture_index: u16,
+    // 2 bits are used for ambient occlusion (0-3), remaining 14 bits unused
+    pub ambient_occlusion: u16,
 }
 
 impl ChunkVertex {
@@ -39,9 +40,9 @@ impl ChunkVertex {
                 format: wgpu::VertexFormat::Uint8x4,
             },
             VertexAttribute {
-                offset: offset_of!(ChunkVertex, material_index) as u64,
+                offset: offset_of!(ChunkVertex, texture_index) as u64,
                 shader_location: 1,
-                format: wgpu::VertexFormat::Uint32,
+                format: wgpu::VertexFormat::Uint16x2,
             },
         ],
     };

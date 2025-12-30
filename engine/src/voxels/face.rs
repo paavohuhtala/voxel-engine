@@ -90,28 +90,53 @@ impl Face {
     /**
      * Returns the indices for two triangles that make up the face, in CCW winding order.
      */
-    pub const fn indices_ccw(self, start_index: u16) -> [u16; 6] {
-        [
-            start_index,
-            start_index + 1,
-            start_index + 2,
-            start_index + 2,
-            start_index + 3,
-            start_index,
-        ]
+    pub const fn indices_ccw(self, start_index: u16, diagonal: FaceDiagonal) -> [u16; 6] {
+        match diagonal {
+            FaceDiagonal::BottomLeftToTopRight => [
+                start_index,
+                start_index + 1,
+                start_index + 2,
+                start_index + 2,
+                start_index + 3,
+                start_index,
+            ],
+            FaceDiagonal::TopLeftToBottomRight => [
+                start_index,
+                start_index + 1,
+                start_index + 3,
+                start_index + 1,
+                start_index + 2,
+                start_index + 3,
+            ],
+        }
     }
 
     /**
      * Returns the indices for two triangles that make up the face, in CW winding order.
      */
-    pub const fn indices_cw(self, start_index: u16) -> [u16; 6] {
-        [
-            start_index,
-            start_index + 3,
-            start_index + 2,
-            start_index + 2,
-            start_index + 1,
-            start_index,
-        ]
+    pub const fn indices_cw(self, start_index: u16, diagonal: FaceDiagonal) -> [u16; 6] {
+        match diagonal {
+            FaceDiagonal::TopLeftToBottomRight => [
+                start_index,
+                start_index + 3,
+                start_index + 1,
+                start_index + 3,
+                start_index + 2,
+                start_index + 1,
+            ],
+            FaceDiagonal::BottomLeftToTopRight => [
+                start_index,
+                start_index + 3,
+                start_index + 2,
+                start_index + 2,
+                start_index + 1,
+                start_index,
+            ],
+        }
     }
+}
+
+pub enum FaceDiagonal {
+    BottomLeftToTopRight,
+    TopLeftToBottomRight,
 }
