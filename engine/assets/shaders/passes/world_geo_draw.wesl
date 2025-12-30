@@ -24,7 +24,7 @@ struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) uv: vec2<f32>,
-    @location(2) texture_index: u32,
+    @location(2) @interpolate(flat) texture_index: u32,
     @location(3) light_factor: f32,
     @location(4) ambient_occlusion: f32,
 }

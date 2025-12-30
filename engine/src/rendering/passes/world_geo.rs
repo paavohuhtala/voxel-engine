@@ -19,9 +19,7 @@ pub struct WorldGeometryPass {
 
     chunk_vertex_buffer: wgpu::Buffer,
     chunk_index_buffer: wgpu::Buffer,
-
     draw_commands: wgpu::Buffer,
-    draw_count: wgpu::Buffer,
 }
 
 impl WorldGeometryPass {
@@ -32,7 +30,6 @@ impl WorldGeometryPass {
         culling_params_buffer: &wgpu::Buffer,
         input_chunk_ids_buffer: &wgpu::Buffer,
         draw_commands_buffer: &wgpu::Buffer,
-        draw_count_buffer: &wgpu::Buffer,
         chunk_vertex_buffer: &wgpu::Buffer,
         chunk_index_buffer: &wgpu::Buffer,
         material_manager: &TextureManager,
@@ -75,11 +72,6 @@ impl WorldGeometryPass {
                     2,
                     "Draw commands buffer",
                     wgpu::BindingResource::Buffer(draw_commands_buffer.as_entire_buffer_binding()),
-                )
-                .storage_rw(
-                    3,
-                    "Draw count buffer",
-                    wgpu::BindingResource::Buffer(draw_count_buffer.as_entire_buffer_binding()),
                 )
                 .build(device);
 
@@ -125,7 +117,6 @@ impl WorldGeometryPass {
             chunk_index_buffer: chunk_index_buffer.clone(),
 
             draw_commands: draw_commands_buffer.clone(),
-            draw_count: draw_count_buffer.clone(),
         }
     }
 
@@ -182,13 +173,7 @@ impl WorldGeometryPass {
         render_pass.set_vertex_buffer(0, self.chunk_vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.chunk_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
 
-        render_pass.multi_draw_indexed_indirect_count(
-            &self.draw_commands,
-            0,
-            &self.draw_count,
-            0,
-            max_draw_count,
-        );
+        render_pass.multi_draw_indexed_indirect(&self.draw_commands, 0, max_draw_count);
     }
 }
 

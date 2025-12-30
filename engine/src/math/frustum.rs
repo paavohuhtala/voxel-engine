@@ -15,21 +15,21 @@ impl Frustum {
     fn corners(view_projection: Mat4) -> [Vec3; 8] {
         let corners: [glam::Vec4; 8] = [
             // Left - Bottom - Near
-            vec4(-1.0, -1.0, -1.0, 1.0),
-            // Right - Bottom - Near
-            vec4(1.0, -1.0, -1.0, 1.0),
-            // Left - Top - Near
-            vec4(-1.0, 1.0, -1.0, 1.0),
-            // Right - Top - Near
-            vec4(1.0, 1.0, -1.0, 1.0),
-            // Left - Bottom - Far
             vec4(-1.0, -1.0, 1.0, 1.0),
-            // Right - Bottom - Far
+            // Right - Bottom - Near
             vec4(1.0, -1.0, 1.0, 1.0),
-            // Left - Top - Far
+            // Left - Top - Near
             vec4(-1.0, 1.0, 1.0, 1.0),
-            // Right - Top - Far
+            // Right - Top - Near
             vec4(1.0, 1.0, 1.0, 1.0),
+            // Left - Bottom - Far
+            vec4(-1.0, -1.0, 0.00001, 1.0),
+            // Right - Bottom - Far
+            vec4(1.0, -1.0, 0.00001, 1.0),
+            // Left - Top - Far
+            vec4(-1.0, 1.0, 0.00001, 1.0),
+            // Right - Top - Far
+            vec4(1.0, 1.0, 0.00001, 1.0),
         ];
 
         let inverse = view_projection.inverse();
@@ -56,17 +56,17 @@ impl Frustum {
 
         let planes = [
             // Left
-            Plane::from_points(left_bottom_near, left_top_far, left_bottom_far).flip(),
+            Plane::from_points(left_bottom_near, left_top_far, left_bottom_far),
             // Right
-            Plane::from_points(right_bottom_near, right_bottom_far, right_top_near).flip(),
+            Plane::from_points(right_bottom_near, right_bottom_far, right_top_near),
             // Bottom
-            Plane::from_points(left_bottom_near, right_bottom_near, left_bottom_far),
+            Plane::from_points(left_bottom_near, right_bottom_near, left_bottom_far).flip(),
             // Top
-            Plane::from_points(left_top_near, right_top_near, left_top_far).flip(),
+            Plane::from_points(left_top_near, right_top_near, left_top_far),
             // Near
-            Plane::from_points(left_bottom_near, right_bottom_near, left_top_near).flip(),
+            Plane::from_points(left_bottom_near, right_bottom_near, left_top_near),
             // Far
-            Plane::from_points(left_bottom_far, right_bottom_far, left_top_far),
+            Plane::from_points(left_bottom_far, right_bottom_far, left_top_far).flip(),
         ];
 
         Frustum { planes }
@@ -95,34 +95,38 @@ mod tests {
 
     #[test]
     fn test_frustum_intersection() {
-        let view = Mat4::look_at_rh(
-            Vec3::new(0.0, 0.0, 5.0), // Eye
-            Vec3::new(0.0, 0.0, 0.0), // Center
-            Vec3::new(0.0, 1.0, 0.0), // Up
+        let view = Mat4::look_at_lh(
+            Vec3::new(0.0, 0.0, -5.0), // Eye
+            Vec3::new(0.0, 0.0, 0.0),  // Center
+            Vec3::new(0.0, 1.0, 0.0),  // Up
         );
-        let projection = Mat4::perspective_rh(
-            90.0_f32.to_radians(),
-            1.0,
-            0.1,
-            100.0,
-        );
+        let projection = Mat4::perspective_infinite_reverse_lh(90.0_f32.to_radians(), 1.0, 0.1);
         let view_projection = projection * view;
         let frustum = Frustum::from_view_projection(view_projection);
 
         // AABB at origin (should be visible)
         let aabb_inside = AABB::new(Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5));
-        assert!(frustum.intersects_aabb(&aabb_inside), "Origin AABB should be visible");
+        assert!(
+            frustum.intersects_aabb(&aabb_inside),
+            "Origin AABB should be visible"
+        );
 
-        // AABB far behind camera (should be culled)
-        // Camera is at (0,0,5) looking at (0,0,0). Back is +Z.
-        // Behind camera is > 5.
-        let aabb_behind = AABB::new(Vec3::new(-0.5, -0.5, 6.0), Vec3::new(0.5, 0.5, 7.0));
-        assert!(!frustum.intersects_aabb(&aabb_behind), "Behind camera AABB should be culled");
+        // AABB behind camera (should be culled)
+        // Camera is at (0,0,-5) looking at (0,0,0). Back is -Z.
+        // Behind camera is < -5.
+        let aabb_behind = AABB::new(Vec3::new(-0.5, -0.5, -7.0), Vec3::new(0.5, 0.5, -6.0));
+        assert!(
+            !frustum.intersects_aabb(&aabb_behind),
+            "Behind camera AABB should be culled"
+        );
 
         // AABB far to the right (should be culled)
         // FOV 90, aspect 1. At Z=0 (dist 5), width is approx 10.
         // Right plane is at X ~ Z.
         let aabb_right = AABB::new(Vec3::new(10.0, -0.5, -0.5), Vec3::new(11.0, 0.5, 0.5));
-        assert!(!frustum.intersects_aabb(&aabb_right), "Right AABB should be culled");
+        assert!(
+            !frustum.intersects_aabb(&aabb_right),
+            "Right AABB should be culled"
+        );
     }
 }

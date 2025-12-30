@@ -40,7 +40,6 @@ impl GameWindow {
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE
-                    | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
                     | wgpu::Features::TEXTURE_BINDING_ARRAY
                     | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),

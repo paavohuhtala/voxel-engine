@@ -9,7 +9,7 @@ use wgpu::wgt::DrawIndexedIndirectArgs;
 use crate::{
     assets::blocks::BlockDatabase,
     camera::Camera,
-    math::aabb::AABB,
+    math::{aabb::AABB, frustum::Frustum},
     rendering::{
         chunk_mesh::{ChunkMesh, ChunkMeshData, ChunkVertex, GpuChunk},
         chunk_mesh_generator::generate_chunk_mesh_data,
@@ -49,7 +49,9 @@ pub struct RenderChunk {
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod)]
 pub struct CullingParams {
+    pub frustum: Frustum,
     pub input_chunk_count: u32,
+    _padding: [u32; 3],
 }
 
 pub struct WorldBuffers {
@@ -59,7 +61,6 @@ pub struct WorldBuffers {
     culling_params: GpuBuffer<CullingParams>,
     input_chunk_ids: GpuBufferArray<u32>,
     draw_commands: GpuBufferArray<DrawIndexedIndirectArgs>,
-    draw_count: GpuBuffer<u32>,
 }
 
 impl WorldBuffers {
@@ -98,7 +99,7 @@ impl WorldBuffers {
 
         let culling_params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Culling params buffer"),
-            size: size_of::<u32>() as u64,
+            size: size_of::<CullingParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -117,15 +118,6 @@ impl WorldBuffers {
             mapped_at_creation: false,
         });
 
-        let draw_count = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Draw count buffer"),
-            size: size_of::<u32>() as u64,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::INDIRECT,
-            mapped_at_creation: false,
-        });
-
         Self {
             vertices: Arc::new(vertex_buffer),
             indices: Arc::new(index_buffer),
@@ -133,7 +125,6 @@ impl WorldBuffers {
             culling_params: GpuBuffer::from_buffer(queue, culling_params),
             input_chunk_ids: GpuBufferArray::from_buffer(queue, input_chunk_ids),
             draw_commands: GpuBufferArray::from_buffer(queue, draw_commands),
-            draw_count: GpuBuffer::from_buffer(queue, draw_count),
         }
     }
 
@@ -222,7 +213,6 @@ impl WorldRenderer {
             &buffers.culling_params.inner(),
             &buffers.input_chunk_ids.inner(),
             &buffers.draw_commands.inner(),
-            &buffers.draw_count.inner(),
             &buffers.vertices.buffer(),
             &buffers.indices.buffer(),
             &texture_manager,
@@ -389,12 +379,12 @@ impl WorldRenderer {
             .map(|chunk| chunk.gpu_handle.offset() as u32)
             .collect();
 
-        // Reset draw count
-        self.buffers.draw_count.write_data(&0u32);
-
+        let frustum = Frustum::from_view_projection(*self.camera.get_view_proj());
         // Update culling params
         let culling_params = CullingParams {
+            frustum,
             input_chunk_count: chunk_ids.len() as u32,
+            _padding: [0; 3],
         };
         self.buffers.culling_params.write_data(&culling_params);
         // Copy chunk IDs to GPU
