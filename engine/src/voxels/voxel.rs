@@ -32,10 +32,14 @@ impl Voxel {
 
     pub const fn is_transparent(&self) -> bool {
         // TODO: Support other transparent block types
-        self.block_type() == 0
+        self.block_type() == Self::AIR.block_type()
     }
 
-    pub fn block_type_id(&self) -> BlockTypeId {
+    pub const fn block_type_id(&self) -> BlockTypeId {
         BlockTypeId(self.block_type())
+    }
+
+    pub const fn is_solid(&self) -> bool {
+        self.block_type() != Self::AIR.block_type()
     }
 }

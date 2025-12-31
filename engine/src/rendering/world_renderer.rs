@@ -32,17 +32,10 @@ use crate::{
     },
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChunkVisibility {
-    Visible,
-    NotVisible,
-}
-
 pub struct RenderChunk {
-    pos: ChunkPos,
+    _pos: ChunkPos,
     aabb: AABB,
-    visibility: ChunkVisibility,
-    mesh: Option<ChunkMesh>,
+    _mesh: Option<ChunkMesh>,
     gpu_handle: GpuPoolHandle<GpuChunk>,
 }
 
@@ -163,7 +156,6 @@ impl WorldBuffers {
 
 pub struct WorldRenderer {
     device: wgpu::Device,
-    queue: wgpu::Queue,
     buffers: WorldBuffers,
     render_chunks: HashMap<ChunkPos, RenderChunk>,
     sky_pass: SkyPass,
@@ -248,7 +240,6 @@ impl WorldRenderer {
 
         Self {
             device: device.clone(),
-            queue: queue.clone(),
             buffers,
             render_chunks: HashMap::new(),
             sky_pass,
@@ -290,10 +281,9 @@ impl WorldRenderer {
         });
 
         let render_chunk = RenderChunk {
-            pos,
+            _pos: pos,
             aabb,
-            visibility: ChunkVisibility::Visible,
-            mesh: Some(chunk_mesh),
+            _mesh: Some(chunk_mesh),
             gpu_handle: gpu_chunk,
         };
         (pos, render_chunk)

@@ -291,11 +291,19 @@ impl<'a> GreedyMesher<'a> {
             (Axis::Z, FaceDirection::Negative) => Face::Back,
         };
 
+        let texture_index = self
+            .block_database
+            .get_by_id(voxel.block_type_id())
+            .expect("Expected to find block definition")
+            .get_texture_indices()
+            .expect("Expected block to have texture indices")
+            .get_face_index(face);
+
         for (i, (curr_u, curr_v)) in uv_coords.iter().enumerate() {
             let pos = U8Vec3::from_axis_values([(d_axis, d), (u_axis, *curr_u), (v_axis, *curr_v)]);
             chunk_mesh_data.vertices.push(ChunkVertex {
                 position: pos.extend(face as u8),
-                texture_index: voxel.block_type(),
+                texture_index,
                 ambient_occlusion: ao[i] as u16,
             });
         }

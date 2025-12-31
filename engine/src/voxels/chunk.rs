@@ -447,6 +447,19 @@ impl Chunk {
             Chunk::Packed(PackedChunk::pack(data))
         }
     }
+
+    pub fn iter_voxels(&self) -> Box<dyn Iterator<Item = (LocalPos, Voxel)> + '_> {
+        match self {
+            Chunk::Solid(voxel) => {
+                let iter = (0..CHUNK_VOLUME).map(move |i| {
+                    let coord = PackedChunk::index_to_coord(i);
+                    (coord, *voxel)
+                });
+                Box::new(iter)
+            }
+            Chunk::Packed(packed) => Box::new(packed.iter_voxels()),
+        }
+    }
 }
 
 #[cfg(test)]

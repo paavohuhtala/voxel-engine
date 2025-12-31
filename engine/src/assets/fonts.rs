@@ -2,7 +2,6 @@ use std::{collections::HashMap, path::Path};
 
 use anyhow::Context;
 use glam::UVec2;
-use image::RgbaImage;
 use serde::Deserialize;
 
 use crate::math::rectangle::URectangle;
@@ -20,8 +19,8 @@ pub enum FontGlyph {
 }
 
 pub struct Font {
-    id: String,
-    name: String,
+    _id: String,
+    _name: String,
     glyphs: FontGlyphs,
     letter_spacing: i32,
 }
@@ -43,7 +42,6 @@ impl Font {
 // Only FixedSizeAtlas is implemented for now
 pub struct FontGlyphs {
     glyphs: HashMap<String, FontGlyph>,
-    image: RgbaImage,
     line_height: u32,
 }
 
@@ -176,15 +174,14 @@ pub fn load_font(folder: &Path, font_name: &str) -> anyhow::Result<Font> {
 
             FontGlyphs {
                 glyphs,
-                image: texture,
                 line_height: grid.1,
             }
         }
     };
 
     Ok(Font {
-        id: definition.id,
-        name: definition.name,
+        _id: definition.id,
+        _name: definition.name,
         glyphs,
         letter_spacing: 1,
     })

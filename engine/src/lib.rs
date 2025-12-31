@@ -3,6 +3,7 @@ pub mod assets;
 pub mod camera;
 pub mod config;
 pub mod game_window;
+pub mod gameplay;
 pub mod math;
 pub mod memory;
 pub mod rendering;

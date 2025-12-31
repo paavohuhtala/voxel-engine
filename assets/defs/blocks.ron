@@ -7,7 +7,11 @@
     BlockDefinition(
         id: 1,
         name: "grass",
-        textures: Single("grass.png"),
+        textures: PerFace(
+            top: "grass.png",
+            side: "grass_side.png",
+            bottom: "dirt.png",
+        ),
     ),
     BlockDefinition(
         id: 2,

@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use debounce::EventDebouncer;
 use winit::{
@@ -15,6 +15,7 @@ use crate::{
         EngineConfig, create_window_attributes, get_engine_config, update_engine_config_file,
     },
     game_window::GameWindow,
+    gameplay::physics::world_collider::PhysicsWorld,
     voxels::{coord::WorldPos, world::World},
     worldgen::{generate_noise_world, text_generator::draw_text},
 };
@@ -25,6 +26,8 @@ pub struct Application {
     config_debouncer: EventDebouncer<EngineConfig>,
     world: World,
     block_database: Arc<BlockDatabase>,
+    physics: PhysicsWorld,
+    last_update: Instant,
 }
 
 impl Application {
@@ -52,13 +55,25 @@ impl Application {
         let world = generate_noise_world(16);
         draw_text(&world, WorldPos::new(0, 16, 0), &font, "Hello, world!");
 
+        let mut physics = PhysicsWorld::new();
+        physics.add_all_chunks(&world);
+        physics.spawn_debug_ball();
+
         Application {
             game_window: None,
             engine_config,
             config_debouncer,
             world,
             block_database,
+            physics,
+            last_update: Instant::now(),
         }
+    }
+
+    fn update(&mut self) {
+        let delta_time = self.last_update.elapsed().as_secs_f32();
+        self.physics.update(delta_time);
+        self.last_update = Instant::now();
     }
 }
 
@@ -90,27 +105,25 @@ impl ApplicationHandler<GameWindow> for Application {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        let game_window = match &mut self.game_window {
-            Some(window) => window,
-            None => return,
-        };
-
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
                 self.engine_config.window_size = Some((size.width, size.height));
                 self.config_debouncer.put(self.engine_config.clone());
-                game_window.resize(size);
+                self.game_window.as_mut().unwrap().resize(size);
             }
             WindowEvent::Moved(position) => {
-                if game_window.is_minimized() {
+                if self.game_window.as_ref().unwrap().is_minimized() {
                     return;
                 }
                 self.engine_config.window_position = Some((position.x, position.y));
                 self.config_debouncer.put(self.engine_config.clone());
             }
             WindowEvent::RedrawRequested => {
-                game_window.render().unwrap();
+                {
+                    self.update();
+                }
+                self.game_window.as_mut().unwrap().render().unwrap();
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -125,7 +138,12 @@ impl ApplicationHandler<GameWindow> for Application {
                     event_loop.exit();
                 }
                 (KeyCode::F2, ElementState::Pressed) => {
-                    game_window.world_renderer.camera.toggle_ao();
+                    self.game_window
+                        .as_mut()
+                        .unwrap()
+                        .world_renderer
+                        .camera
+                        .toggle_ao();
                 }
                 _ => {}
             },

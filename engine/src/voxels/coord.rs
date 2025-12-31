@@ -146,3 +146,11 @@ impl Sub for WorldPos {
         WorldPos(self.0 - other.0)
     }
 }
+
+impl Add<LocalPos> for WorldPos {
+    type Output = WorldPos;
+
+    fn add(self, other: LocalPos) -> WorldPos {
+        WorldPos(self.0 + other.0.as_ivec3())
+    }
+}

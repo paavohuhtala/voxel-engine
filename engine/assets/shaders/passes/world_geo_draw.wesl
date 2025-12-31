@@ -84,10 +84,10 @@ fn get_uv(local_pos: vec3<u32>, face_idx: u32) -> vec2<f32> {
     switch (face_idx) {
         case 0: { return vec2<f32>(f32(local_pos.x), f32(local_pos.z)); } // Top
         case 1: { return vec2<f32>(-f32(local_pos.x), f32(local_pos.z)); } // Bottom
-        case 2: { return vec2<f32>(f32(local_pos.z), f32(local_pos.y)); } // Left
-        case 3: { return vec2<f32>(-f32(local_pos.z), f32(local_pos.y)); } // Right
-        case 4: { return vec2<f32>(f32(local_pos.x), f32(local_pos.y)); } // Front
-        case 5: { return vec2<f32>(-f32(local_pos.x), f32(local_pos.y)); } // Back
+        case 2: { return vec2<f32>(f32(local_pos.z), -f32(local_pos.y)); } // Left
+        case 3: { return vec2<f32>(-f32(local_pos.z), -f32(local_pos.y)); } // Right
+        case 4: { return vec2<f32>(f32(local_pos.x), -f32(local_pos.y)); } // Front
+        case 5: { return vec2<f32>(-f32(local_pos.x), -f32(local_pos.y)); } // Back
         default: { return vec2<f32>(0.0, 0.0); } // Should not happen
     }
 }
