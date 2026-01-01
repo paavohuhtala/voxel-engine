@@ -89,14 +89,5 @@ fn generate_solid_chunk_mesh(
             .extend_from_slice(&face.indices_ccw(start_index, FaceDiagonal::TopLeftToBottomRight));
     }
 
-    // This is a full chunk, so y range is 0 to CHUNK_SIZE
-    let y_range = create_packed_y_range(0, CHUNK_SIZE);
-
-    mesh_data.position_and_y_range = pos.0.extend(y_range as i32);
     mesh_data
-}
-
-/// Packs minimum and maximum y values into a single u8
-fn create_packed_y_range(min_y: u8, max_y: u8) -> u8 {
-    (min_y & 0x0F) | ((max_y & 0x0F) << 4)
 }

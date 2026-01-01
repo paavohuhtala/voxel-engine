@@ -45,7 +45,7 @@ fn main(
     var chunk_id = input_chunk_ids[index];
     var chunk = chunks[chunk_id];
     var frustum = culling_params.frustum;
-    var aabb = get_chunk_aabb(chunk.position.xyz, 0u, 16u);
+    var aabb = unpack_aabb(chunk.aabb);
 
     var is_visible = is_inside_frustum(frustum, aabb);
     if !is_visible {
@@ -66,10 +66,17 @@ struct AABB {
     max: vec3<f32>,
 }
 
-fn get_chunk_aabb(chunk_pos: vec3<i32>, y_min: u32, y_max: u32) -> AABB {
-    let min = chunk_pos * vec3<i32>(16) + vec3<i32>(0, i32(y_min), 0);
-    let max = chunk_pos * vec3<i32>(16) + vec3<i32>(16, i32(y_max), 16);
-    return AABB(vec3<f32>(min), vec3<f32>(max));
+fn unpack_aabb(packed: u32) -> AABB {
+    let min_x = f32((packed >> 0u) & 0xFu);
+    let min_y = f32((packed >> 4u) & 0xFu);
+    let min_z = f32((packed >> 8u) & 0xFu);
+    let max_x = f32((packed >> 12u) & 0xFu);
+    let max_y = f32((packed >> 16u) & 0xFu);
+    let max_z = f32((packed >> 20u) & 0xFu);
+    return AABB(
+        vec3<f32>(min_x, min_y, min_z),
+        vec3<f32>(max_x, max_y, max_z)
+    );
 }
 
 fn is_inside_frustum(frustum: Frustum, aabb: AABB) -> bool {

@@ -1,6 +1,7 @@
 use crate::{
     assets::blocks::BlockDatabase,
     math::{
+        aabb::AABB8,
         axis::Axis,
         basis::Basis,
         local_vec::{ConstructLocalVec3, LocalVec3},
@@ -66,10 +67,31 @@ impl<'a> GreedyMesher<'a> {
         for d_axis in AXES {
             self.create_faces_for_axis(world, chunk_pos, &mut chunk_mesh_data, d_axis);
         }
-        // TODO: Calculate real min_y and max_y
-        chunk_mesh_data.set_y_range(0, 15);
-
+        chunk_mesh_data.aabb = self.compute_aabb();
         chunk_mesh_data
+    }
+
+    fn compute_aabb(&self) -> AABB8 {
+        let mut min = U8Vec3::splat(15);
+        let mut max = U8Vec3::splat(0);
+
+        for y in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    let index = (y as usize * CHUNK_SIZE as usize * CHUNK_SIZE as usize)
+                        + (z as usize * CHUNK_SIZE as usize)
+                        + x as usize;
+                    let voxel = self.voxels[index];
+                    if voxel != Voxel::AIR {
+                        let pos = U8Vec3::new(x, y, z);
+                        min = min.min(pos);
+                        max = max.max(pos);
+                    }
+                }
+            }
+        }
+
+        AABB8::new(min, max)
     }
 
     fn reset(&mut self) {

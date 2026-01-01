@@ -8,7 +8,10 @@ use rayon::prelude::*;
 use crate::{
     assets::blocks::BlockDatabase,
     camera::Camera,
-    math::{aabb::AABB, frustum::Frustum},
+    math::{
+        aabb::{AABB8, PackedAABB},
+        frustum::Frustum,
+    },
     rendering::{
         chunk_mesh::{ChunkMesh, ChunkMeshData, ChunkVertex, GpuChunk},
         chunk_mesh_generator::generate_chunk_mesh_data,
@@ -32,8 +35,8 @@ use crate::{
 };
 
 pub struct RenderChunk {
+    aabb: AABB8,
     _pos: ChunkPos,
-    aabb: AABB,
     _mesh: Option<ChunkMesh>,
     gpu_handle: GpuPoolHandle<GpuChunk>,
 }
@@ -121,7 +124,8 @@ impl WorldBuffers {
         index_allocation.write_data(&mesh_data.indices);
 
         ChunkMesh {
-            position_and_y_range: mesh_data.position_and_y_range,
+            position: mesh_data.position,
+            aabb: mesh_data.aabb,
             vertices_handle: vertex_allocation,
             indices_handle: index_allocation,
             index_count: mesh_data.indices.len() as u32,
@@ -231,24 +235,20 @@ impl WorldRenderer {
 
         let mesh_data = generate_chunk_mesh_data(block_database, pos, chunk, world);
         let chunk_mesh = buffers.initialize_chunk_mesh(&mesh_data);
-        // TODO: Proper AABB calculation
-        let aabb = AABB::new(
-            pos.origin().0.as_vec3(),
-            pos.origin().0.as_vec3() + Vec3::splat(CHUNK_SIZE as f32),
-        );
         let gpu_chunk = buffers.chunks.allocate().expect("Failed to allocate chunk");
+        let aabb = PackedAABB::try_from(mesh_data.aabb).expect("Failed to pack chunk AABB");
 
         gpu_chunk.write_data(&GpuChunk {
-            position_and_y_range: chunk_mesh.position_and_y_range,
+            position: chunk_mesh.position.extend(0),
             mesh_data_index_offset: chunk_mesh.indices_handle.index() as u32,
             mesh_data_index_count: chunk_mesh.indices_handle.count() as u32,
             mesh_data_vertex_offset: chunk_mesh.vertices_handle.index() as i32,
-            _padding: 0,
+            aabb,
         });
 
         let render_chunk = RenderChunk {
             _pos: pos,
-            aabb,
+            aabb: mesh_data.aabb,
             _mesh: Some(chunk_mesh),
             gpu_handle: gpu_chunk,
         };

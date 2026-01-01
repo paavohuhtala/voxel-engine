@@ -4,6 +4,7 @@ struct Chunk {
     mesh_data_index_offset: u32,
     mesh_data_index_count: u32,
     mesh_data_vertex_offset: i32,
+    aabb: u32
 }
 
 struct Camera {

@@ -1,20 +1,24 @@
 use std::mem::offset_of;
 
 use bytemuck::{Pod, Zeroable};
-use glam::{IVec4, U8Vec4};
+use glam::{IVec3, IVec4, U8Vec3, U8Vec4};
 use wgpu::{VertexAttribute, VertexBufferLayout};
 
-use crate::{rendering::memory::gpu_heap::GpuHeapHandle, voxels::coord::ChunkPos};
+use crate::{
+    math::aabb::{AABB8, PackedAABB},
+    rendering::memory::gpu_heap::GpuHeapHandle,
+    voxels::coord::ChunkPos,
+};
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Zeroable, Pod)]
 pub struct GpuChunk {
-    // World position of the chunk (x, y, z, min_y/max_y packed in w)
-    pub position_and_y_range: IVec4,
+    // World position of the chunk (x, y, z, w unused)
+    pub position: IVec4,
     pub mesh_data_index_offset: u32,
     pub mesh_data_index_count: u32,
     pub mesh_data_vertex_offset: i32,
-    pub _padding: u32,
+    pub aabb: PackedAABB,
 }
 
 #[repr(C)]
@@ -50,8 +54,8 @@ impl ChunkVertex {
 
 #[derive(Clone, Default)]
 pub struct ChunkMeshData {
-    // World position of the chunk (x, y, z, min_y/max_y packed in w)
-    pub position_and_y_range: IVec4,
+    pub position: IVec3,
+    pub aabb: AABB8,
     pub vertices: Vec<ChunkVertex>,
     pub indices: Vec<u16>,
 }
@@ -63,20 +67,17 @@ impl ChunkMeshData {
 
     pub fn from_position(pos: ChunkPos) -> Self {
         ChunkMeshData {
-            position_and_y_range: pos.0.extend(0),
+            position: pos.0,
+            aabb: AABB8::new(U8Vec3::splat(0), U8Vec3::splat(15)),
             vertices: Vec::new(),
             indices: Vec::new(),
         }
     }
-
-    pub fn set_y_range(&mut self, min_y: u8, max_y: u8) {
-        let packed_y_range = (min_y & 0x0F) | ((max_y & 0x0F) << 4);
-        self.position_and_y_range.w = packed_y_range as i32;
-    }
 }
 
 pub struct ChunkMesh {
-    pub position_and_y_range: IVec4,
+    pub position: IVec3,
+    pub aabb: AABB8,
     pub vertices_handle: GpuHeapHandle<ChunkVertex>,
     pub indices_handle: GpuHeapHandle<u16>,
     pub index_count: u32,
