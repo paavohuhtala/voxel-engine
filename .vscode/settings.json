@@ -5,5 +5,6 @@
     "wgsl-analyzer.diagnostics.typeErrors": false,
     "wgsl-analyzer.diagnostics.nagaParsingErrors": false,
     "wgsl-analyzer.diagnostics.nagaValidationErrors": false,
-    "wgsl-analyzer.initializeStopped": true
+    "wgsl-analyzer.initializeStopped": true,
+    "rust-analyzer.check.command": "clippy"
 }

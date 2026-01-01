@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::rendering::{
-    common::FullscreenVertexShader, passes::postfx::postfx::PostFxPass,
+    common::FullscreenVertexShader, passes::postfx::postfx_pass::PostFxPass,
     postfx_constants::PostFxConstantsBuffer,
 };
 

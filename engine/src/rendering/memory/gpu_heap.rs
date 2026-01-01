@@ -6,7 +6,9 @@ use std::{
 
 use bytemuck::Pod;
 
-use crate::rendering::memory::buddy_allocator::{AllocatorConfig, BuddyAllocator, BuddyAllocatorStats};
+use crate::rendering::memory::buddy_allocator::{
+    AllocatorConfig, BuddyAllocator, BuddyAllocatorStats,
+};
 
 pub struct GpuHeapHandle<T> {
     byte_offset: u64,

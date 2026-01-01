@@ -46,11 +46,8 @@ impl Application {
             },
         );
 
-        let font = load_font(
-            PathBuf::from("assets/fonts").as_path(),
-            "custom",
-        )
-        .expect("Failed to load font");
+        let font = load_font(PathBuf::from("assets/fonts").as_path(), "custom")
+            .expect("Failed to load font");
 
         let mut block_database = BlockDatabase::new();
         block_database

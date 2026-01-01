@@ -19,7 +19,6 @@ pub enum Face {
     Back,
 }
 
-
 impl Face {
     pub fn to_ivec3(&self) -> IVec3 {
         match self {

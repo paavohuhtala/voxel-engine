@@ -304,13 +304,9 @@ impl WorldRenderer {
             .par_iter()
             .filter_map(|&pos| {
                 // Because chunks are stored in a DashMap, they could technically disapper while we're iterating
-                world.chunks.get(&pos).map(|chunk| Self::create_render_chunk(
-                        block_database.as_ref(),
-                        buffers,
-                        pos,
-                        &chunk,
-                        world,
-                    ))
+                world.chunks.get(&pos).map(|chunk| {
+                    Self::create_render_chunk(block_database.as_ref(), buffers, pos, &chunk, world)
+                })
             })
             .collect_vec_list();
 

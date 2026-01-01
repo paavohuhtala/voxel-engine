@@ -82,7 +82,7 @@ fn generate_solid_chunk_mesh(
             });
         }
 
-        let start_index = (face as u16 * 4);
+        let start_index = face as u16 * 4;
         mesh_data
             .indices
             .extend_from_slice(&face.indices_ccw(start_index, FaceDiagonal::TopLeftToBottomRight));

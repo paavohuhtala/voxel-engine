@@ -1,3 +1,3 @@
 pub mod fxaa;
 pub mod noise;
-mod postfx;
+mod postfx_pass;

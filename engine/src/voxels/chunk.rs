@@ -69,7 +69,7 @@ impl Palette {
     // but when converting between representations this can be useful
     pub fn get_packed_index_bits(&self) -> usize {
         let count = self.voxel_types.len();
-        
+
         (count as f32).log2().ceil() as usize
     }
 }
@@ -435,9 +435,10 @@ impl Chunk {
         let mut neighbors = ArrayVec::new();
         for face in Face::all() {
             if let Some(neighbor_coord) = coord.offset(face)
-                && let Some(voxel) = self.get_voxel(neighbor_coord) {
-                    neighbors.push((face, voxel));
-                }
+                && let Some(voxel) = self.get_voxel(neighbor_coord)
+            {
+                neighbors.push((face, voxel));
+            }
         }
         neighbors
     }

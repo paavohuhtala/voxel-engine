@@ -15,7 +15,7 @@ pub struct EngineConfig {
 impl EngineConfig {
     pub fn is_valid(&self) -> bool {
         match self.window_size {
-            Some((width, height)) if width <= 0 || height <= 0 => {
+            Some((width, height)) if width == 0 || height == 0 => {
                 return false;
             }
             _ => {}
