@@ -1,6 +1,10 @@
 use crate::{
     assets::blocks::BlockDatabase,
-    math::axis::{Axis, Vector3AxisExt},
+    math::{
+        axis::Axis,
+        basis::Basis,
+        local_vec::{ConstructLocalVec3, LocalVec3},
+    },
     rendering::chunk_mesh::{ChunkMeshData, ChunkVertex},
     voxels::{
         chunk::{CHUNK_SIZE, PackedChunk},
@@ -10,7 +14,7 @@ use crate::{
         world::World,
     },
 };
-use glam::{IVec3, U8Vec3};
+use glam::{IVec3, U8Vec2, U8Vec3};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FaceDirection {
@@ -101,19 +105,21 @@ impl<'a> GreedyMesher<'a> {
         mesh_data: &mut ChunkMeshData,
         d_axis: Axis,
     ) {
+        let basis = Basis::new(d_axis.u_axis(), d_axis.v_axis(), d_axis);
+
         // Iterate across the depth of the chunk along the current axis
         // Note that this is an inclusive range to handle the back faces of the last layer
         for depth in 0..=(CHUNK_SIZE as i32) {
-            self.create_mask_for_slice(d_axis, depth, world, chunk_pos);
-            self.create_faces_at_depth(mesh_data, d_axis, depth);
+            self.create_mask_for_slice(world, basis, depth, chunk_pos);
+            self.create_faces_at_depth(mesh_data, basis, depth);
         }
     }
 
     fn create_mask_for_slice(
         &mut self,
-        d_axis: Axis,
-        depth: i32,
         world: &World,
+        basis: Basis,
+        depth: i32,
         chunk_pos: ChunkPos,
     ) {
         const N: i32 = CHUNK_SIZE as i32;
@@ -121,33 +127,19 @@ impl<'a> GreedyMesher<'a> {
         // Clear the mask completely
         self.mask.fill(MaskEntry::Empty);
 
-        let u_axis = d_axis.u_axis();
-        let v_axis = d_axis.v_axis();
-
-        let d_vec = d_axis.as_unit_vector();
-        let u_vec = u_axis.as_unit_vector();
-        let v_vec = v_axis.as_unit_vector();
-
         for v in 0..N {
             for u in 0..N {
-                let pos = d_vec * depth + u_vec * u + v_vec * v;
-                let voxel_front = self.get_voxel(world, chunk_pos, pos - d_vec);
-                let voxel_back = self.get_voxel(world, chunk_pos, pos);
+                let pos = LocalVec3::from_uvd(u, v, depth, basis);
+                let front = pos.offset(0, 0, -1).to_world();
+                let back = pos.to_world();
+                let voxel_front = self.get_voxel(world, chunk_pos, front);
+                let voxel_back = self.get_voxel(world, chunk_pos, back);
 
                 let entry = match (voxel_front, voxel_back) {
                     // Voxel's front face is exposed
                     (Some(voxel), None) => {
-                        let ao = self.calculate_face_ao(
-                            world,
-                            chunk_pos,
-                            d_axis,
-                            u_axis,
-                            v_axis,
-                            depth,
-                            u,
-                            v,
-                            FaceDirection::Positive,
-                        );
+                        let ao =
+                            self.calculate_face_ao(world, chunk_pos, pos, FaceDirection::Positive);
                         MaskEntry::VoxelFace {
                             voxel,
                             direction: FaceDirection::Positive,
@@ -156,17 +148,8 @@ impl<'a> GreedyMesher<'a> {
                     }
                     // Voxel's back face is exposed
                     (None, Some(voxel)) => {
-                        let ao = self.calculate_face_ao(
-                            world,
-                            chunk_pos,
-                            d_axis,
-                            u_axis,
-                            v_axis,
-                            depth,
-                            u,
-                            v,
-                            FaceDirection::Negative,
-                        );
+                        let ao =
+                            self.calculate_face_ao(world, chunk_pos, pos, FaceDirection::Negative);
                         MaskEntry::VoxelFace {
                             voxel,
                             direction: FaceDirection::Negative,
@@ -181,11 +164,8 @@ impl<'a> GreedyMesher<'a> {
         }
     }
 
-    fn create_faces_at_depth(&mut self, mesh_data: &mut ChunkMeshData, d_axis: Axis, depth: i32) {
+    fn create_faces_at_depth(&mut self, mesh_data: &mut ChunkMeshData, basis: Basis, depth: i32) {
         const N: usize = CHUNK_SIZE as usize;
-
-        let u_axis = d_axis.u_axis();
-        let v_axis = d_axis.v_axis();
 
         // Iterate over the mask for this slice and generate quads
         let mut index = 0;
@@ -229,16 +209,12 @@ impl<'a> GreedyMesher<'a> {
                     }
                 }
 
+                let origin = LocalVec3::from_uvd(u as u8, v as u8, depth as u8, basis);
+
                 self.add_quad(
                     mesh_data,
-                    d_axis,
-                    u_axis,
-                    v_axis,
-                    depth as u8,
-                    u as u8,
-                    v as u8,
-                    width as u8,
-                    height as u8,
+                    origin,
+                    (width as u8, height as u8).into(),
                     voxel,
                     direction,
                     ao,
@@ -261,28 +237,24 @@ impl<'a> GreedyMesher<'a> {
     fn add_quad(
         &self,
         chunk_mesh_data: &mut ChunkMeshData,
-        d_axis: Axis,
-        u_axis: Axis,
-        v_axis: Axis,
-        d: u8,
-        u: u8,
-        v: u8,
-        width: u8,
-        height: u8,
+        origin: LocalVec3<U8Vec3>,
+        size: U8Vec2,
         voxel: Voxel,
         direction: FaceDirection,
         ao: [u8; 4],
     ) {
         let start_index = chunk_mesh_data.vertices.len() as u16;
+        let uv = origin.uv();
 
+        // Despite the name, these are not _texture_ UVs, but rather local quad vertex coordinates in the U and V axes
         let uv_coords = [
-            (u, v),
-            (u + width, v),
-            (u + width, v + height),
-            (u, v + height),
+            uv,
+            uv.offset(size.x, 0),
+            uv.offset(size.x, size.y),
+            uv.offset(0, size.y),
         ];
 
-        let face = match (d_axis, direction) {
+        let face = match (origin.basis.d, direction) {
             (Axis::Y, FaceDirection::Positive) => Face::Top,
             (Axis::Y, FaceDirection::Negative) => Face::Bottom,
             (Axis::X, FaceDirection::Negative) => Face::Left,
@@ -299,8 +271,8 @@ impl<'a> GreedyMesher<'a> {
             .expect("Expected block to have texture indices")
             .get_face_index(face);
 
-        for (i, (curr_u, curr_v)) in uv_coords.iter().enumerate() {
-            let pos = U8Vec3::from_axis_values([(d_axis, d), (u_axis, *curr_u), (v_axis, *curr_v)]);
+        for (i, pos) in uv_coords.iter().enumerate() {
+            let pos = pos.extend(origin.d(), origin.basis.d).to_world();
             chunk_mesh_data.vertices.push(ChunkVertex {
                 position: pos.extend(face as u8),
                 texture_index,
@@ -326,26 +298,18 @@ impl<'a> GreedyMesher<'a> {
         &self,
         world: &World,
         chunk_pos: ChunkPos,
-        d_axis: Axis,
-        u_axis: Axis,
-        v_axis: Axis,
-        d: i32,
-        u: i32,
-        v: i32,
+        pos: LocalVec3<IVec3>,
         direction: FaceDirection,
     ) -> [u8; 4] {
-        let neighbor_d = match direction {
-            FaceDirection::Positive => d,
-            FaceDirection::Negative => d - 1,
+        let offset_d = match direction {
+            FaceDirection::Positive => 0,
+            FaceDirection::Negative => -1,
         };
 
         let get_neighbor_voxel = |offset_u: i32, offset_v: i32| {
-            let chunk_relative_position = IVec3::from_axis_values([
-                (d_axis, neighbor_d),
-                (u_axis, u + offset_u),
-                (v_axis, v + offset_v),
-            ]);
-            self.get_voxel(world, chunk_pos, chunk_relative_position)
+            let local_pos = pos.offset(offset_u, offset_v, offset_d);
+            let chunk_relative_world_pos = local_pos.to_world();
+            self.get_voxel(world, chunk_pos, chunk_relative_world_pos)
         };
 
         let top_neighbor = get_neighbor_voxel(0, 1);
