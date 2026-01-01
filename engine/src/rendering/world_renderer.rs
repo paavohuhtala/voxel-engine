@@ -4,7 +4,6 @@ use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use ordered_float::OrderedFloat;
 use rayon::prelude::*;
-use wgpu::wgt::DrawIndexedIndirectArgs;
 
 use crate::{
     assets::blocks::BlockDatabase,
@@ -16,11 +15,11 @@ use crate::{
         memory::{
             gpu_heap::GpuHeap,
             gpu_pool::{GpuPool, GpuPoolHandle},
-            typed_buffer::{GpuBuffer, GpuBufferArray},
+            typed_buffer::GpuBuffer,
         },
         passes::{sky::SkyPass, world_geo::WorldGeometryPass},
         postfx::PostFxRenderer,
-        render_camera::RenderCamera,
+        render_camera::{CameraUniform, RenderCamera},
         resolution::Resolution,
         texture::{DepthTexture, Texture},
         texture_manager::TextureManager,
@@ -48,12 +47,10 @@ pub struct CullingParams {
 }
 
 pub struct WorldBuffers {
-    vertices: Arc<GpuHeap<ChunkVertex>>,
-    indices: Arc<GpuHeap<u16>>,
-    chunks: Arc<GpuPool<GpuChunk>>,
-    culling_params: GpuBuffer<CullingParams>,
-    input_chunk_ids: GpuBufferArray<u32>,
-    draw_commands: GpuBufferArray<DrawIndexedIndirectArgs>,
+    pub vertices: Arc<GpuHeap<ChunkVertex>>,
+    pub indices: Arc<GpuHeap<u16>>,
+    pub chunks: Arc<GpuPool<GpuChunk>>,
+    pub camera: GpuBuffer<CameraUniform>,
 }
 
 impl WorldBuffers {
@@ -62,6 +59,7 @@ impl WorldBuffers {
         queue: &wgpu::Queue,
         vertex_capacity_bytes: u64,
         index_capacity_bytes: u64,
+        camera: GpuBuffer<CameraUniform>,
     ) -> Self {
         let vertex_buffer = GpuHeap::new(
             device,
@@ -90,34 +88,11 @@ impl WorldBuffers {
             "World chunk buffer",
         );
 
-        let culling_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Culling params buffer"),
-            size: size_of::<CullingParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let input_chunk_ids = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Input chunk IDs buffer"),
-            size: (max_chunks * size_of::<u32>() as u64),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let draw_commands = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Draw commands buffer"),
-            size: (max_chunks * size_of::<DrawIndexedIndirectArgs>() as u64),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
-            mapped_at_creation: false,
-        });
-
         Self {
             vertices: Arc::new(vertex_buffer),
             indices: Arc::new(index_buffer),
             chunks: Arc::new(chunk_buffer),
-            culling_params: GpuBuffer::from_buffer(queue, culling_params),
-            input_chunk_ids: GpuBufferArray::from_buffer(queue, input_chunk_ids),
-            draw_commands: GpuBufferArray::from_buffer(queue, draw_commands),
+            camera,
         }
     }
 
@@ -180,13 +155,6 @@ impl WorldRenderer {
         size: Resolution,
         block_database: Arc<BlockDatabase>,
     ) -> Self {
-        let buffers = WorldBuffers::new(
-            device,
-            queue,
-            Self::VERTEX_BUFFER_CAPACITY,
-            Self::INDEX_BUFFER_CAPACITY,
-        );
-
         let camera = Camera {
             eye: Vec3::new(64.0, 32.0, -32.0),
             target: Vec3::new(0.0, 0.0, 0.0),
@@ -194,21 +162,19 @@ impl WorldRenderer {
         };
         let render_camera = RenderCamera::new(device, queue, camera, size);
 
+        let buffers = WorldBuffers::new(
+            device,
+            queue,
+            Self::VERTEX_BUFFER_CAPACITY,
+            Self::INDEX_BUFFER_CAPACITY,
+            render_camera.uniform_buffer.clone(),
+        );
+
         let sky_pass = SkyPass::new(device, &render_camera.uniform_buffer);
 
         let texture_manager = TextureManager::new(device, queue);
 
-        let world_geo_pass = WorldGeometryPass::new(
-            device,
-            &render_camera.uniform_buffer,
-            buffers.chunks.buffer(),
-            buffers.culling_params.inner(),
-            buffers.input_chunk_ids.inner(),
-            buffers.draw_commands.inner(),
-            buffers.vertices.buffer(),
-            buffers.indices.buffer(),
-            &texture_manager,
-        );
+        let world_geo_pass = WorldGeometryPass::new(device, queue, &buffers, &texture_manager);
 
         let scene_texture = Texture::from_descriptor(
             device,
@@ -347,7 +313,6 @@ impl WorldRenderer {
         let mut render_chunks: Vec<&RenderChunk> = self.render_chunks.values().collect();
 
         // Sort by distance to camera
-        // TODO: Sorting does literally nothing right now, because the culling compute shader runs in parallel
         render_chunks.par_sort_by_cached_key(|chunk| {
             let chunk_center = chunk.aabb.center();
             let distance_sq = camera_pos.distance_squared(chunk_center);
@@ -368,12 +333,9 @@ impl WorldRenderer {
             input_chunk_count: chunk_ids.len() as u32,
             _padding: [0; 3],
         };
-        self.buffers.culling_params.write_data(&culling_params);
-        // Copy chunk IDs to GPU
-        self.buffers.input_chunk_ids.write_data(&chunk_ids);
         // Perform culling pass
         self.world_geo_pass
-            .cull_chunks(encoder, culling_params.input_chunk_count);
+            .cull_chunks(encoder, &culling_params, &chunk_ids);
 
         // Render sky
         self.sky_pass.render(encoder, &self.scene_texture.view);

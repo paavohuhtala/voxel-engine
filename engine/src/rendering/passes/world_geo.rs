@@ -1,12 +1,18 @@
+use std::mem::size_of;
+
+use wgpu::wgt::DrawIndexedIndirectArgs;
 use wgpu::{
     BindGroup, CompareFunction, ComputePipeline, DepthStencilState, PrimitiveState, RenderPipeline,
     RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderStages, VertexState,
 };
 
 use crate::rendering::{
-    chunk_mesh::ChunkVertex, memory::typed_buffer::GpuBuffer, render_camera::CameraUniform,
-    texture::DepthTexture, texture_manager::TextureManager,
+    chunk_mesh::ChunkVertex,
+    memory::typed_buffer::{GpuBuffer, GpuBufferArray},
+    texture::DepthTexture,
+    texture_manager::TextureManager,
     util::bind_group_builder::BindGroupBuilder,
+    world_renderer::{CullingParams, WorldBuffers},
 };
 
 pub struct WorldGeometryPass {
@@ -19,20 +25,18 @@ pub struct WorldGeometryPass {
 
     chunk_vertex_buffer: wgpu::Buffer,
     chunk_index_buffer: wgpu::Buffer,
-    draw_commands: wgpu::Buffer,
+
+    culling_params: GpuBuffer<CullingParams>,
+    input_chunk_ids: GpuBufferArray<u32>,
+    draw_commands: GpuBufferArray<DrawIndexedIndirectArgs>,
 }
 
 impl WorldGeometryPass {
     pub fn new(
         device: &wgpu::Device,
-        camera_uniform_buffer: &GpuBuffer<CameraUniform>,
-        chunks_buffer: &wgpu::Buffer,
-        culling_params_buffer: &wgpu::Buffer,
-        input_chunk_ids_buffer: &wgpu::Buffer,
-        draw_commands_buffer: &wgpu::Buffer,
-        chunk_vertex_buffer: &wgpu::Buffer,
-        chunk_index_buffer: &wgpu::Buffer,
-        material_manager: &TextureManager,
+        queue: &wgpu::Queue,
+        buffers: &WorldBuffers,
+        texture_manager: &TextureManager,
     ) -> Self {
         let (camera_bind_group_layout, camera_bind_group) =
             BindGroupBuilder::new("camera", ShaderStages::VERTEX | ShaderStages::COMPUTE)
@@ -40,7 +44,7 @@ impl WorldGeometryPass {
                     0,
                     "Camera uniform buffer",
                     wgpu::BindingResource::Buffer(
-                        camera_uniform_buffer.inner().as_entire_buffer_binding(),
+                        buffers.camera.inner().as_entire_buffer_binding(),
                     ),
                 )
                 .build(device);
@@ -50,9 +54,34 @@ impl WorldGeometryPass {
                 .storage_r(
                     0,
                     "Chunks buffer",
-                    wgpu::BindingResource::Buffer(chunks_buffer.as_entire_buffer_binding()),
+                    wgpu::BindingResource::Buffer(
+                        buffers.chunks.buffer().as_entire_buffer_binding(),
+                    ),
                 )
                 .build(device);
+
+        let max_chunks = 32 * 32 * 32;
+
+        let culling_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Culling params buffer"),
+            size: size_of::<CullingParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let input_chunk_ids_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Input chunk IDs buffer"),
+            size: (max_chunks * size_of::<u32>() as u64),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let draw_commands_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Draw commands buffer"),
+            size: (max_chunks * size_of::<DrawIndexedIndirectArgs>() as u64),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
+            mapped_at_creation: false,
+        });
 
         let (culling_bind_group_layout, culling_bind_group) =
             BindGroupBuilder::new("culling", ShaderStages::COMPUTE)
@@ -80,14 +109,14 @@ impl WorldGeometryPass {
                 .array_texture(
                     0,
                     "World texture array",
-                    wgpu::BindingResource::TextureView(material_manager.array_texture_view()),
+                    wgpu::BindingResource::TextureView(texture_manager.array_texture_view()),
                     wgpu::TextureSampleType::Float { filterable: true },
-                    material_manager.texture_capacity() as u32,
+                    texture_manager.texture_capacity() as u32,
                 )
                 .sampler(
                     1,
                     "World texture sampler",
-                    wgpu::BindingResource::Sampler(material_manager.sampler()),
+                    wgpu::BindingResource::Sampler(texture_manager.sampler()),
                     wgpu::SamplerBindingType::Filtering,
                 )
                 .build(device);
@@ -113,15 +142,25 @@ impl WorldGeometryPass {
             culling_bind_group,
             textures_bind_group,
 
-            chunk_vertex_buffer: chunk_vertex_buffer.clone(),
-            chunk_index_buffer: chunk_index_buffer.clone(),
+            chunk_vertex_buffer: buffers.vertices.buffer().clone(),
+            chunk_index_buffer: buffers.indices.buffer().clone(),
 
-            draw_commands: draw_commands_buffer.clone(),
+            culling_params: GpuBuffer::from_buffer(queue, culling_params_buffer),
+            input_chunk_ids: GpuBufferArray::from_buffer(queue, input_chunk_ids_buffer),
+            draw_commands: GpuBufferArray::from_buffer(queue, draw_commands_buffer),
         }
     }
 
     #[profiling::function]
-    pub fn cull_chunks(&self, encoder: &mut wgpu::CommandEncoder, chunk_count: u32) {
+    pub fn cull_chunks(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        culling_params: &CullingParams,
+        chunk_ids: &[u32],
+    ) {
+        self.culling_params.write_data(culling_params);
+        self.input_chunk_ids.write_data(chunk_ids);
+
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("World geometry culling pass"),
             timestamp_writes: None,
@@ -132,7 +171,7 @@ impl WorldGeometryPass {
         compute_pass.set_bind_group(2, &self.culling_bind_group, &[]);
 
         let workgroup_size = 64;
-        let workgroup_count = chunk_count.div_ceil(workgroup_size);
+        let workgroup_count = culling_params.input_chunk_count.div_ceil(workgroup_size);
         compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
     }
 
@@ -173,7 +212,7 @@ impl WorldGeometryPass {
         render_pass.set_vertex_buffer(0, self.chunk_vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.chunk_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
 
-        render_pass.multi_draw_indexed_indirect(&self.draw_commands, 0, max_draw_count);
+        render_pass.multi_draw_indexed_indirect(self.draw_commands.inner(), 0, max_draw_count);
     }
 }
 

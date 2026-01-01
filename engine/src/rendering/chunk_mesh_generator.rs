@@ -23,6 +23,7 @@ pub fn generate_chunk_mesh_data(
         Chunk::Solid(solid_voxel) => generate_solid_chunk_mesh(block_database, pos, *solid_voxel),
         Chunk::Packed(packed) => {
             // TODO: Reuse instance of GreedyMesher to avoid reallocating the mask and voxel buffer every time
+            // Problem: GreedyMesher has mutable state, so we need one instance per thread or use thread-local storage
             let mut mesher = GreedyMesher::new(block_database);
             mesher.generate_mesh(world, pos, packed)
         }
