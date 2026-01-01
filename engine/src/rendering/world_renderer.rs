@@ -202,11 +202,11 @@ impl WorldRenderer {
             device,
             &render_camera.uniform_buffer,
             buffers.chunks.buffer(),
-            &buffers.culling_params.inner(),
-            &buffers.input_chunk_ids.inner(),
-            &buffers.draw_commands.inner(),
-            &buffers.vertices.buffer(),
-            &buffers.indices.buffer(),
+            buffers.culling_params.inner(),
+            buffers.input_chunk_ids.inner(),
+            buffers.draw_commands.inner(),
+            buffers.vertices.buffer(),
+            buffers.indices.buffer(),
             &texture_manager,
         );
 
@@ -304,17 +304,13 @@ impl WorldRenderer {
             .par_iter()
             .filter_map(|&pos| {
                 // Because chunks are stored in a DashMap, they could technically disapper while we're iterating
-                if let Some(chunk) = world.chunks.get(&pos) {
-                    Some(Self::create_render_chunk(
+                world.chunks.get(&pos).map(|chunk| Self::create_render_chunk(
                         block_database.as_ref(),
                         buffers,
                         pos,
                         &chunk,
                         world,
                     ))
-                } else {
-                    None
-                }
             })
             .collect_vec_list();
 

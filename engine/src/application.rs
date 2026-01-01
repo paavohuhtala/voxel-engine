@@ -30,6 +30,12 @@ pub struct Application {
     last_update: Instant,
 }
 
+impl Default for Application {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Application {
     pub fn new() -> Self {
         let engine_config = get_engine_config().unwrap_or_default();
@@ -41,7 +47,7 @@ impl Application {
         );
 
         let font = load_font(
-            PathBuf::try_from("assets/fonts").unwrap().as_path(),
+            PathBuf::from("assets/fonts").as_path(),
             "custom",
         )
         .expect("Failed to load font");

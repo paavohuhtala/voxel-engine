@@ -30,7 +30,7 @@ const fn get_mip_sizes() -> [u32; MIP_LAYERS] {
     let mut level = 0;
     while level < MIP_LAYERS {
         let size = TEXTURE_SIZE >> level;
-        sizes[level as usize] = if size == 0 { 1 } else { size as u32 };
+        sizes[level] = if size == 0 { 1 } else { size as u32 };
         level += 1;
     }
     sizes
@@ -162,7 +162,7 @@ impl TextureManager {
                 return image.clone();
             }
 
-            let size = MIP_SIZES[i as usize];
+            let size = MIP_SIZES[i];
             imageops::resize(image, size, size, FilterType::Triangle)
         })
     }

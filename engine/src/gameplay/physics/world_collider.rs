@@ -34,6 +34,12 @@ pub struct ChunkHandles {
     pub rigid_body_handle: RigidBodyHandle,
 }
 
+impl Default for PhysicsWorld {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PhysicsWorld {
     pub fn new() -> Self {
         PhysicsWorld {

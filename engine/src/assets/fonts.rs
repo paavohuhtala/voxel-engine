@@ -113,8 +113,8 @@ pub fn load_font(folder: &Path, font_name: &str) -> anyhow::Result<Font> {
                     'outer_start: for px in 0..grid_cell.x {
                         for py in 0..grid_cell.y {
                             let pixel = texture.get_pixel(
-                                (rect.origin.x + px) as u32,
-                                (rect.origin.y + py) as u32,
+                                ((rect.origin.x + px)),
+                                ((rect.origin.y + py)),
                             );
                             if pixel.0[3] != 0 {
                                 x_start = px;
@@ -126,8 +126,8 @@ pub fn load_font(folder: &Path, font_name: &str) -> anyhow::Result<Font> {
                     'outer_end: for px in (0..grid_cell.x).rev() {
                         for py in 0..grid_cell.y {
                             let pixel = texture.get_pixel(
-                                (rect.origin.x + px) as u32,
-                                (rect.origin.y + py) as u32,
+                                ((rect.origin.x + px)),
+                                ((rect.origin.y + py)),
                             );
                             if pixel.0[3] != 0 {
                                 x_end = px + 1;
@@ -143,8 +143,8 @@ pub fn load_font(folder: &Path, font_name: &str) -> anyhow::Result<Font> {
                     for py in 0..grid_cell.y {
                         for px in x_start..x_start + actual_width {
                             let pixel = texture.get_pixel(
-                                (rect.origin.x + px) as u32,
-                                (rect.origin.y + py) as u32,
+                                ((rect.origin.x + px)),
+                                ((rect.origin.y + py)),
                             );
                             bitmap.push(pixel.0[3] != 0);
                         }

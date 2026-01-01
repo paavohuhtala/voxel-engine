@@ -11,6 +11,12 @@ pub struct World {
     modified_chunks: DashSet<ChunkPos>,
 }
 
+impl Default for World {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl World {
     pub fn new() -> Self {
         World {

@@ -2,8 +2,10 @@ use glam::{IVec3, U8Vec3};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[derive(Default)]
 pub enum Face {
     /// Y+
+    #[default]
     Top = 0,
     /// Y-
     Bottom,
@@ -17,11 +19,6 @@ pub enum Face {
     Back,
 }
 
-impl Default for Face {
-    fn default() -> Self {
-        Face::Top
-    }
-}
 
 impl Face {
     pub fn to_ivec3(&self) -> IVec3 {

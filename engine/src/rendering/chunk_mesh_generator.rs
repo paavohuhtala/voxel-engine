@@ -71,7 +71,7 @@ fn generate_solid_chunk_mesh(
         let texture_index = texture_indices.get_face_index(face);
         for vertex in face.vertices() {
             // Add other metadata here if needed
-            let position = (vertex * CHUNK_SIZE as u8).extend(face as u8);
+            let position = (vertex * CHUNK_SIZE).extend(face as u8);
 
             mesh_data.vertices.push(ChunkVertex {
                 position,
@@ -82,14 +82,14 @@ fn generate_solid_chunk_mesh(
             });
         }
 
-        let start_index = (face as u16 * 4) as u16;
+        let start_index = (face as u16 * 4);
         mesh_data
             .indices
             .extend_from_slice(&face.indices_ccw(start_index, FaceDiagonal::TopLeftToBottomRight));
     }
 
     // This is a full chunk, so y range is 0 to CHUNK_SIZE
-    let y_range = create_packed_y_range(0, CHUNK_SIZE as u8);
+    let y_range = create_packed_y_range(0, CHUNK_SIZE);
 
     mesh_data.position_and_y_range = pos.0.extend(y_range as i32);
     mesh_data

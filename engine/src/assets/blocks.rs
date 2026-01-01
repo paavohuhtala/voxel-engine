@@ -91,6 +91,12 @@ pub struct BlockDatabase {
     assets_root: PathBuf,
 }
 
+impl Default for BlockDatabase {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BlockDatabase {
     pub fn new() -> Self {
         let assets_root = PathBuf::from("assets");

@@ -26,7 +26,7 @@ impl PostFxConstantsBuffer {
     }
 
     pub fn buffer(&self) -> &wgpu::Buffer {
-        &self.0.inner()
+        self.0.inner()
     }
 
     pub fn update(&self, now: f32) {

@@ -132,7 +132,7 @@ impl WorldGeometryPass {
         compute_pass.set_bind_group(2, &self.culling_bind_group, &[]);
 
         let workgroup_size = 64;
-        let workgroup_count = (chunk_count + workgroup_size - 1) / workgroup_size;
+        let workgroup_count = chunk_count.div_ceil(workgroup_size);
         compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
     }
 

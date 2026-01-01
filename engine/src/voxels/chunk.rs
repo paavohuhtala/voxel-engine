@@ -69,8 +69,8 @@ impl Palette {
     // but when converting between representations this can be useful
     pub fn get_packed_index_bits(&self) -> usize {
         let count = self.voxel_types.len();
-        let bits = (count as f32).log2().ceil() as usize;
-        bits
+        
+        (count as f32).log2().ceil() as usize
     }
 }
 
@@ -96,6 +96,12 @@ pub struct PackedChunk {
 struct VoxelOffsets {
     data_index: usize,
     bit_offset: usize,
+}
+
+impl Default for PackedChunk {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PackedChunk {
@@ -137,7 +143,7 @@ impl PackedChunk {
         }
 
         let voxels_per_u64 = 64 / needed_bits;
-        let u64_count = (CHUNK_VOLUME + voxels_per_u64 - 1) / voxels_per_u64;
+        let u64_count = CHUNK_VOLUME.div_ceil(voxels_per_u64);
         self.data = vec![0u64; u64_count].into_boxed_slice();
 
         // If we had data, we need to copy it over
@@ -253,7 +259,7 @@ impl PackedChunk {
             let voxel = self
                 .palette
                 .get_voxel_type(palette_index as usize)
-                .unwrap_or(Voxel::new());
+                .unwrap_or_default();
             (coord, voxel)
         })
     }
@@ -392,7 +398,7 @@ impl Chunk {
             self.reallocate_if_necessary();
 
             if let Chunk::Packed(packed) = self {
-                return packed;
+                packed
             } else {
                 unreachable!();
             }
@@ -428,11 +434,10 @@ impl Chunk {
     pub fn get_neighbors(&self, coord: LocalPos) -> ArrayVec<[(Face, Voxel); 6]> {
         let mut neighbors = ArrayVec::new();
         for face in Face::all() {
-            if let Some(neighbor_coord) = coord.offset(face) {
-                if let Some(voxel) = self.get_voxel(neighbor_coord) {
+            if let Some(neighbor_coord) = coord.offset(face)
+                && let Some(voxel) = self.get_voxel(neighbor_coord) {
                     neighbors.push((face, voxel));
                 }
-            }
         }
         neighbors
     }

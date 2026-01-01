@@ -96,7 +96,7 @@ impl PostFxPass {
                 .sampler(
                     1,
                     "Sampler",
-                    wgpu::BindingResource::Sampler(&sampler),
+                    wgpu::BindingResource::Sampler(sampler),
                     wgpu::SamplerBindingType::Filtering,
                 )
                 .uniform(
