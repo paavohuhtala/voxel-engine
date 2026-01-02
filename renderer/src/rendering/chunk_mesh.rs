@@ -4,11 +4,12 @@ use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, IVec4, U8Vec3, U8Vec4};
 use wgpu::{VertexAttribute, VertexBufferLayout};
 
-use crate::{
+use engine::{
     math::aabb::{AABB8, PackedAABB},
-    rendering::memory::gpu_heap::GpuHeapHandle,
     voxels::coord::ChunkPos,
 };
+
+use crate::rendering::memory::gpu_heap::GpuHeapHandle;
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Zeroable, Pod)]

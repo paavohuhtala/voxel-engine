@@ -1,9 +1,5 @@
-use crate::{
+use engine::{
     assets::blocks::BlockDatabase,
-    rendering::{
-        chunk_mesh::{ChunkMeshData, ChunkVertex},
-        mesh_generations::greedy_mesher::GreedyMesher,
-    },
     voxels::{
         chunk::{CHUNK_SIZE, Chunk},
         coord::ChunkPos,
@@ -11,6 +7,11 @@ use crate::{
         voxel::Voxel,
         world::World,
     },
+};
+
+use crate::rendering::{
+    chunk_mesh::{ChunkMeshData, ChunkVertex},
+    mesh_generations::greedy_mesher::GreedyMesher,
 };
 
 pub fn generate_chunk_mesh_data(

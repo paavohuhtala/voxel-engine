@@ -6,7 +6,7 @@ use image::{
 };
 use wgpu::{TexelCopyBufferLayout, TexelCopyTextureInfo};
 
-use crate::{
+use engine::{
     assets::blocks::{BlockDatabaseEntry, BlockTextures, TextureIndices},
     memory::pool::Pool,
 };

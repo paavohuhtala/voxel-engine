@@ -1,14 +1,14 @@
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
+use engine::{assets::blocks::BlockDatabase, game_loop::GameLoopTime};
 use wgpu::{RenderPassDescriptor, wgt::CommandEncoderDescriptor};
 use winit::window::Window;
 
-use crate::{
-    assets::blocks::BlockDatabase,
-    rendering::{resolution::Resolution, texture::DepthTexture, world_renderer::WorldRenderer},
+use crate::rendering::{
+    resolution::Resolution, texture::DepthTexture, world_renderer::WorldRenderer,
 };
 
-pub struct GameWindow {
+pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -17,10 +17,9 @@ pub struct GameWindow {
     is_surface_configured: bool,
     window: Arc<Window>,
     pub world_renderer: WorldRenderer,
-    last_frame_time: Instant,
 }
 
-impl GameWindow {
+impl Renderer {
     pub async fn new(
         window: Arc<Window>,
         block_database: Arc<BlockDatabase>,
@@ -93,7 +92,7 @@ impl GameWindow {
 
         let world_renderer = WorldRenderer::new(&device, &queue, size, block_database.clone());
 
-        Ok(GameWindow {
+        Ok(Renderer {
             surface,
             device,
             queue,
@@ -102,7 +101,6 @@ impl GameWindow {
             is_surface_configured: false,
             window,
             world_renderer,
-            last_frame_time: Instant::now(),
         })
     }
 
@@ -119,8 +117,11 @@ impl GameWindow {
         }
     }
 
-    pub fn render(&mut self) -> anyhow::Result<()> {
-        self.update();
+    pub fn update(&mut self, time: &GameLoopTime) {
+        self.world_renderer.update(time);
+    }
+
+    pub fn render(&mut self, time: &GameLoopTime) -> anyhow::Result<()> {
         self.window.request_redraw();
 
         if !self.is_surface_configured {
@@ -176,7 +177,7 @@ impl GameWindow {
 
         {
             self.world_renderer
-                .render(&mut encoder, &view, &self.depth_texture);
+                .render(&mut encoder, &view, &self.depth_texture, time);
         }
 
         self.queue.submit([encoder.finish()]);
@@ -184,13 +185,6 @@ impl GameWindow {
         profiling::finish_frame!();
 
         Ok(())
-    }
-
-    pub fn update(&mut self) {
-        let now = Instant::now();
-        let delta_time = now.duration_since(self.last_frame_time);
-        self.world_renderer.update(delta_time);
-        self.last_frame_time = now;
     }
 
     pub fn is_minimized(&self) -> bool {

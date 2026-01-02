@@ -12,7 +12,7 @@ pub struct Frustum {
 }
 
 impl Frustum {
-    fn corners(view_projection: Mat4) -> [Vec3; 8] {
+    fn corners(inverse_view_projection: &Mat4) -> [Vec3; 8] {
         let corners: [glam::Vec4; 8] = [
             // Left - Bottom - Near
             vec4(-1.0, -1.0, 1.0, 1.0),
@@ -32,17 +32,15 @@ impl Frustum {
             vec4(1.0, 1.0, 0.00001, 1.0),
         ];
 
-        let inverse = view_projection.inverse();
-
         corners.map(|corner| {
-            let mut corner = inverse * corner;
+            let mut corner = inverse_view_projection * corner;
             corner = corner / corner.w;
             corner.xyz()
         })
     }
 
-    pub fn from_view_projection(view_projection: Mat4) -> Frustum {
-        let corners = Self::corners(view_projection);
+    pub fn from_inverse_view_projection(inverse_view_projection: &Mat4) -> Frustum {
+        let corners = Self::corners(inverse_view_projection);
         let [
             left_bottom_near,
             right_bottom_near,
@@ -102,7 +100,7 @@ mod tests {
         );
         let projection = Mat4::perspective_infinite_reverse_lh(90.0_f32.to_radians(), 1.0, 0.1);
         let view_projection = projection * view;
-        let frustum = Frustum::from_view_projection(view_projection);
+        let frustum = Frustum::from_inverse_view_projection(&view_projection);
 
         // AABB at origin (should be visible)
         let aabb_inside = AABB::new(Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5));

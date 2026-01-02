@@ -1,4 +1,4 @@
-use crate::{
+use engine::{
     assets::blocks::BlockDatabase,
     math::{
         aabb::AABB8,
@@ -6,7 +6,6 @@ use crate::{
         basis::Basis,
         local_vec::{ConstructLocalVec3, LocalVec3},
     },
-    rendering::chunk_mesh::{ChunkMeshData, ChunkVertex},
     voxels::{
         chunk::{CHUNK_SIZE, PackedChunk},
         coord::{ChunkPos, WorldPos},
@@ -16,6 +15,8 @@ use crate::{
     },
 };
 use glam::{IVec3, U8Vec2, U8Vec3};
+
+use crate::rendering::chunk_mesh::{ChunkMeshData, ChunkVertex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FaceDirection {

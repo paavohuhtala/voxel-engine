@@ -5,7 +5,15 @@ edition = "2024"
 
 [dependencies]
 engine = { path = "../engine" }
+renderer = { path = "../renderer" }
 anyhow = "1"
+winit = "0.30.12"
+log = "0.4.29"
+pretty_env_logger = "0.5.0"
+serde = { version = "1.0.228", features = ["derive"] }
+ron = "0.12.0"
+pollster = "0.4.0"
+profiling = "1.0.17"
 
 [features]
 superluminal = ["engine/superluminal"]

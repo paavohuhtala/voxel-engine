@@ -1,0 +1,26 @@
+[package]
+name = "renderer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+engine = { path = "../engine" }
+anyhow = "1"
+wgpu = "28.0.0"
+log = "0.4.29"
+winit = "0.30.12"
+profiling = "1.0.17"
+bytemuck = "1.24.0"
+glam = { version = "0.30.9", features = ["serde", "bytemuck"] }
+image = { version = "0.25.9", default-features = false, features = [
+    "png",
+    "jpeg",
+] }
+ordered-float = "5.1.0"
+rayon = "1.11.0"
+
+[build-dependencies]
+wesl = "0.3.1"
+
+[features]
+superluminal = ["engine/superluminal"]

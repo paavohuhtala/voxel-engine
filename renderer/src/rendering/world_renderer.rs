@@ -1,37 +1,39 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use ordered_float::OrderedFloat;
 use rayon::prelude::*;
 
-use crate::{
+use engine::{
     assets::blocks::BlockDatabase,
     camera::Camera,
+    game_loop::GameLoopTime,
     math::{
         aabb::{AABB8, PackedAABB},
         frustum::Frustum,
-    },
-    rendering::{
-        chunk_mesh::{ChunkMesh, ChunkMeshData, ChunkVertex, GpuChunk},
-        chunk_mesh_generator::generate_chunk_mesh_data,
-        memory::{
-            gpu_heap::GpuHeap,
-            gpu_pool::{GpuPool, GpuPoolHandle},
-            typed_buffer::GpuBuffer,
-        },
-        passes::{sky::SkyPass, world_geo::WorldGeometryPass},
-        postfx::PostFxRenderer,
-        render_camera::{CameraUniform, RenderCamera},
-        resolution::Resolution,
-        texture::{DepthTexture, Texture},
-        texture_manager::TextureManager,
     },
     voxels::{
         chunk::{CHUNK_SIZE, Chunk},
         coord::ChunkPos,
         world::World,
     },
+};
+
+use crate::rendering::{
+    chunk_mesh::{ChunkMesh, ChunkMeshData, ChunkVertex, GpuChunk},
+    chunk_mesh_generator::generate_chunk_mesh_data,
+    memory::{
+        gpu_heap::GpuHeap,
+        gpu_pool::{GpuPool, GpuPoolHandle},
+        typed_buffer::GpuBuffer,
+    },
+    passes::{sky::SkyPass, world_geo::WorldGeometryPass},
+    postfx::PostFxRenderer,
+    render_camera::{CameraUniform, RenderCamera},
+    resolution::Resolution,
+    texture::{DepthTexture, Texture},
+    texture_manager::TextureManager,
 };
 
 pub struct RenderChunk {
@@ -294,7 +296,7 @@ impl WorldRenderer {
     }
 
     pub fn resize(&mut self, size: Resolution) {
-        self.camera.update_resolution(size);
+        self.camera.resize(size);
         self.scene_texture.resize(&self.device, size);
         self.post_fx.resize(size, &self.scene_texture.view);
     }
@@ -305,17 +307,19 @@ impl WorldRenderer {
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         depth_texture: &DepthTexture,
+        time: &GameLoopTime,
     ) {
-        let camera_pos = self.camera.camera.eye;
-        self.camera.update_uniform_buffer();
+        self.camera
+            .update_camera_matrices(time.blending_factor as f32);
         self.post_fx.update(self.time);
 
+        let eye = self.camera.eye(time.blending_factor as f32);
         let mut render_chunks: Vec<&RenderChunk> = self.render_chunks.values().collect();
 
         // Sort by distance to camera
         render_chunks.par_sort_by_cached_key(|chunk| {
             let chunk_center = chunk.aabb.center();
-            let distance_sq = camera_pos.distance_squared(chunk_center);
+            let distance_sq = eye.distance_squared(chunk_center);
             OrderedFloat(distance_sq)
         });
 
@@ -326,7 +330,7 @@ impl WorldRenderer {
             .map(|chunk| chunk.gpu_handle.offset() as u32)
             .collect();
 
-        let frustum = Frustum::from_view_projection(*self.camera.get_view_proj());
+        let frustum = Frustum::from_inverse_view_projection(self.camera.inverse_view_projection());
         // Update culling params
         let culling_params = CullingParams {
             frustum,
@@ -353,22 +357,23 @@ impl WorldRenderer {
     }
 
     #[profiling::function]
-    pub fn update(&mut self, delta_time: Duration) {
-        self.time += delta_time.as_secs_f32();
-
+    pub fn update(&mut self, time: &GameLoopTime) {
         // Rotate camera around the origin
         let rotation_speed = -0.02; // Radians per second
-        self.camera_angle += rotation_speed * delta_time.as_secs_f32();
+        self.camera_angle += rotation_speed * time.delta_time_s as f32;
         let radius = 45.0;
 
-        self.camera.update_camera(&Camera {
-            eye: Vec3::new(
-                radius * self.camera_angle.cos(),
-                16.0,
-                radius * self.camera_angle.sin(),
-            ),
-            target: Vec3::splat(CHUNK_SIZE as f32 / 2.0),
-            up: Vec3::Y,
-        });
+        self.camera.update_camera(
+            &Camera {
+                eye: Vec3::new(
+                    radius * self.camera_angle.cos(),
+                    16.0,
+                    radius * self.camera_angle.sin(),
+                ),
+                target: Vec3::splat(CHUNK_SIZE as f32 / 2.0),
+                up: Vec3::Y,
+            },
+            false,
+        );
     }
 }

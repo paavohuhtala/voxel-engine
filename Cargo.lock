@@ -630,17 +630,13 @@ dependencies = [
  "noise",
  "ordered-float",
  "parry3d",
- "pollster",
- "pretty_env_logger",
  "profiling",
  "rapier3d",
  "rayon",
  "ron",
  "serde",
  "tinyvec",
- "wesl",
  "wgpu",
- "winit",
 ]
 
 [[package]]
@@ -754,6 +750,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "engine",
+ "log",
+ "pollster",
+ "pretty_env_logger",
+ "profiling",
+ "renderer",
+ "ron",
+ "serde",
+ "winit",
 ]
 
 [[package]]
@@ -2265,6 +2269,24 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
+
+[[package]]
+name = "renderer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "engine",
+ "glam 0.30.9",
+ "image",
+ "log",
+ "ordered-float",
+ "profiling",
+ "rayon",
+ "wesl",
+ "wgpu",
+ "winit",
+]
 
 [[package]]
 name = "robust"
