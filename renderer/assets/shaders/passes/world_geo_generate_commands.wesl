@@ -47,6 +47,10 @@ fn main(
     var frustum = culling_params.frustum;
     var aabb = unpack_aabb(chunk.aabb);
 
+    let chunk_pos = vec3<f32>(f32(chunk.position.x), f32(chunk.position.y), f32(chunk.position.z)) * 16.0;
+    aabb.min += chunk_pos;
+    aabb.max += chunk_pos;
+
     var is_visible = is_inside_frustum(frustum, aabb);
     if !is_visible {
         draw_commands[index] = DrawIndexedIndirect(0u, 0u, 0u, 0i, 0u);
@@ -70,9 +74,9 @@ fn unpack_aabb(packed: u32) -> AABB {
     let min_x = f32((packed >> 0u) & 0xFu);
     let min_y = f32((packed >> 4u) & 0xFu);
     let min_z = f32((packed >> 8u) & 0xFu);
-    let max_x = f32((packed >> 12u) & 0xFu);
-    let max_y = f32((packed >> 16u) & 0xFu);
-    let max_z = f32((packed >> 20u) & 0xFu);
+    let max_x = f32((packed >> 12u) & 0xFu) + 1.0;
+    let max_y = f32((packed >> 16u) & 0xFu) + 1.0;
+    let max_z = f32((packed >> 20u) & 0xFu) + 1.0;
     return AABB(
         vec3<f32>(min_x, min_y, min_z),
         vec3<f32>(max_x, max_y, max_z)

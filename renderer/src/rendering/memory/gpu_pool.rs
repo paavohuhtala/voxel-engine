@@ -8,6 +8,8 @@ use bytemuck::Pod;
 
 use engine::memory::pool::Pool;
 
+use crate::rendering::buffer_update_batcher::BufferUpdateBatcher;
+
 pub struct GpuPoolHandle<T> {
     index: u64,
     pool: Arc<GpuPool<T>>,
@@ -24,6 +26,10 @@ impl<T: Pod> GpuPoolHandle<T> {
 
     pub fn write_data(&self, data: &T) {
         self.pool.write_data(self, data);
+    }
+
+    pub fn write_data_batched(&self, batcher: &mut BufferUpdateBatcher, data: &T) {
+        self.pool.write_data_batched(batcher, self, data);
     }
 }
 
@@ -90,5 +96,18 @@ impl<T: Pod> GpuPool<T> {
         let byte_offset = allocation.offset() * size_of::<T>() as u64;
         self.queue
             .write_buffer(&self.buffer, byte_offset, bytemuck::bytes_of(data));
+    }
+
+    pub fn write_data_batched(
+        &self,
+        batcher: &mut BufferUpdateBatcher,
+        allocation: &GpuPoolHandle<T>,
+        data: &T,
+    ) {
+        batcher.add_update(
+            &self.buffer,
+            allocation.offset() * size_of::<T>() as u64,
+            *data,
+        );
     }
 }

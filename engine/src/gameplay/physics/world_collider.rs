@@ -8,7 +8,7 @@ use rapier3d::prelude::{
     PhysicsPipeline, RigidBodyBuilder, RigidBodyHandle, RigidBodySet,
 };
 
-use crate::voxels::{chunk::Chunk, coord::ChunkPos, world::World};
+use crate::voxels::{chunk::Chunk, coord::ChunkPos};
 
 pub struct PhysicsWorld {
     colliders: ColliderSet,
@@ -69,12 +69,6 @@ impl PhysicsWorld {
         let rigid_body_handle = self.rigid_bodies.insert(rigid_body);
         self.colliders
             .insert_with_parent(collider, rigid_body_handle, &mut self.rigid_bodies);
-    }
-
-    pub fn add_all_chunks(&mut self, world: &World) {
-        for entry in world.chunks.iter() {
-            self.add_chunk(*entry.key(), entry.value());
-        }
     }
 
     pub fn add_chunk(&mut self, chunk_pos: ChunkPos, chunk: &Chunk) {

@@ -1,22 +1,25 @@
+use std::sync::Arc;
+
 use engine::{
     assets::blocks::BlockDatabase,
     math::{
-        aabb::AABB8,
         axis::Axis,
         basis::Basis,
         local_vec::{ConstructLocalVec3, LocalVec3},
     },
     voxels::{
-        chunk::{CHUNK_SIZE, PackedChunk},
-        coord::{ChunkPos, WorldPos},
+        chunk::CHUNK_SIZE,
+        coord::WorldPos,
         face::{Face, FaceDiagonal},
         voxel::Voxel,
-        world::World,
     },
 };
 use glam::{IVec3, U8Vec2, U8Vec3};
 
-use crate::rendering::chunk_mesh::{ChunkMeshData, ChunkVertex};
+use crate::rendering::{
+    chunk_mesh::{ChunkMeshData, ChunkVertex},
+    mesh_generation::chunk_mesh_generator_input::ChunkMeshGeneratorInput,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FaceDirection {
@@ -34,85 +37,37 @@ enum MaskEntry {
     Empty,
 }
 
-pub struct GreedyMesher<'a> {
-    block_database: &'a BlockDatabase,
+pub struct GreedyMesher {
+    block_database: Arc<BlockDatabase>,
     mask: Vec<MaskEntry>,
-    voxels: Vec<Voxel>,
 }
 
-impl<'a> GreedyMesher<'a> {
-    pub fn new(block_database: &'a BlockDatabase) -> Self {
+impl GreedyMesher {
+    pub fn new(block_database: Arc<BlockDatabase>) -> Self {
         const CHUNK_USIZE: usize = CHUNK_SIZE as usize;
         GreedyMesher {
             block_database,
             mask: vec![MaskEntry::Empty; CHUNK_USIZE.pow(2)],
-            voxels: Vec::with_capacity(CHUNK_USIZE.pow(3)),
         }
     }
 
-    pub fn generate_mesh(
-        &mut self,
-        world: &World,
-        chunk_pos: ChunkPos,
-        chunk: &PackedChunk,
-    ) -> ChunkMeshData {
-        self.reset();
-
-        let mut chunk_mesh_data = ChunkMeshData::from_position(chunk_pos);
-        // Unpack the chunk for faster access
-        // Data is in Y->Z->X order
-        chunk.unpack(&mut self.voxels);
+    pub fn generate_mesh(&mut self, input: &ChunkMeshGeneratorInput) -> ChunkMeshData {
+        let mut chunk_mesh_data = ChunkMeshData::from_position(input.center_pos);
 
         const AXES: [Axis; 3] = [Axis::X, Axis::Y, Axis::Z];
         // For each principal axis, construct a 2D mask and generate quads for exposed faces
         for d_axis in AXES {
-            self.create_faces_for_axis(world, chunk_pos, &mut chunk_mesh_data, d_axis);
+            self.create_faces_for_axis(input, &mut chunk_mesh_data, d_axis);
         }
-        chunk_mesh_data.aabb = self.compute_aabb();
+        chunk_mesh_data.aabb = input.center.compute_aabb();
         chunk_mesh_data
-    }
-
-    fn compute_aabb(&self) -> AABB8 {
-        let mut min = U8Vec3::splat(15);
-        let mut max = U8Vec3::splat(0);
-
-        for y in 0..CHUNK_SIZE {
-            for z in 0..CHUNK_SIZE {
-                for x in 0..CHUNK_SIZE {
-                    let index = (y as usize * CHUNK_SIZE as usize * CHUNK_SIZE as usize)
-                        + (z as usize * CHUNK_SIZE as usize)
-                        + x as usize;
-                    let voxel = self.voxels[index];
-                    if voxel != Voxel::AIR {
-                        let pos = U8Vec3::new(x, y, z);
-                        min = min.min(pos);
-                        max = max.max(pos);
-                    }
-                }
-            }
-        }
-
-        AABB8::new(min, max)
-    }
-
-    fn reset(&mut self) {
-        // We don't need to clear the mask here, because generate_mesh fills it completely for each slice
-        self.voxels.clear();
     }
 
     /// Gets the voxel at the given position. The position is provided as chunk-relative coordinates.
     /// If the position is out of bounds for the current chunk, it queries the world for the voxel instead.
-    fn get_voxel(&self, world: &World, chunk_pos: ChunkPos, pos: IVec3) -> Option<Voxel> {
-        const N: i32 = CHUNK_SIZE as i32;
-        let voxel = if pos.x < 0 || pos.y < 0 || pos.z < 0 || pos.x >= N || pos.y >= N || pos.z >= N
-        {
-            let world_pos = chunk_pos.origin() + WorldPos::from(pos);
-            world.get_voxel(world_pos)
-        } else {
-            // Voxel is inside the current chunk, get it from the voxel buffer
-            let index = (pos.y * N * N) + (pos.z * N) + pos.x;
-            Some(self.voxels[index as usize])
-        };
+    fn get_voxel(&self, input: &ChunkMeshGeneratorInput, offset: IVec3) -> Option<Voxel> {
+        let world_pos = input.center_pos.origin() + WorldPos::from(offset);
+        let voxel = input.get_voxel(world_pos);
 
         // Treat AIR as None
         match voxel {
@@ -123,8 +78,7 @@ impl<'a> GreedyMesher<'a> {
 
     fn create_faces_for_axis(
         &mut self,
-        world: &World,
-        chunk_pos: ChunkPos,
+        input: &ChunkMeshGeneratorInput,
         mesh_data: &mut ChunkMeshData,
         d_axis: Axis,
     ) {
@@ -133,18 +87,12 @@ impl<'a> GreedyMesher<'a> {
         // Iterate across the depth of the chunk along the current axis
         // Note that this is an inclusive range to handle the back faces of the last layer
         for depth in 0..=(CHUNK_SIZE as i32) {
-            self.create_mask_for_slice(world, basis, depth, chunk_pos);
+            self.create_mask_for_slice(input, basis, depth);
             self.create_faces_at_depth(mesh_data, basis, depth);
         }
     }
 
-    fn create_mask_for_slice(
-        &mut self,
-        world: &World,
-        basis: Basis,
-        depth: i32,
-        chunk_pos: ChunkPos,
-    ) {
+    fn create_mask_for_slice(&mut self, input: &ChunkMeshGeneratorInput, basis: Basis, depth: i32) {
         const N: i32 = CHUNK_SIZE as i32;
 
         // Clear the mask completely
@@ -155,28 +103,36 @@ impl<'a> GreedyMesher<'a> {
                 let pos = LocalVec3::from_uvd(u, v, depth, basis);
                 let front = pos.offset(0, 0, -1).to_world();
                 let back = pos.to_world();
-                let voxel_front = self.get_voxel(world, chunk_pos, front);
-                let voxel_back = self.get_voxel(world, chunk_pos, back);
+                let voxel_front = self.get_voxel(input, front);
+                let voxel_back = self.get_voxel(input, back);
 
                 let entry = match (voxel_front, voxel_back) {
                     // Voxel's front face is exposed
                     (Some(voxel), None) => {
-                        let ao =
-                            self.calculate_face_ao(world, chunk_pos, pos, FaceDirection::Positive);
-                        MaskEntry::VoxelFace {
-                            voxel,
-                            direction: FaceDirection::Positive,
-                            ao,
+                        // Only generate if the voxel belongs to the current chunk
+                        if depth - 1 < 0 {
+                            MaskEntry::Empty
+                        } else {
+                            let ao = self.calculate_face_ao(input, pos, FaceDirection::Positive);
+                            MaskEntry::VoxelFace {
+                                voxel,
+                                direction: FaceDirection::Positive,
+                                ao,
+                            }
                         }
                     }
                     // Voxel's back face is exposed
                     (None, Some(voxel)) => {
-                        let ao =
-                            self.calculate_face_ao(world, chunk_pos, pos, FaceDirection::Negative);
-                        MaskEntry::VoxelFace {
-                            voxel,
-                            direction: FaceDirection::Negative,
-                            ao,
+                        // Only generate if the voxel belongs to the current chunk
+                        if depth >= N {
+                            MaskEntry::Empty
+                        } else {
+                            let ao = self.calculate_face_ao(input, pos, FaceDirection::Negative);
+                            MaskEntry::VoxelFace {
+                                voxel,
+                                direction: FaceDirection::Negative,
+                                ao,
+                            }
                         }
                     }
                     // Both faces of the voxel are either exposed or hidden, skip
@@ -319,8 +275,7 @@ impl<'a> GreedyMesher<'a> {
 
     fn calculate_face_ao(
         &self,
-        world: &World,
-        chunk_pos: ChunkPos,
+        input: &ChunkMeshGeneratorInput,
         pos: LocalVec3<IVec3>,
         direction: FaceDirection,
     ) -> [u8; 4] {
@@ -332,7 +287,7 @@ impl<'a> GreedyMesher<'a> {
         let get_neighbor_voxel = |offset_u: i32, offset_v: i32| {
             let local_pos = pos.offset(offset_u, offset_v, offset_d);
             let chunk_relative_world_pos = local_pos.to_world();
-            self.get_voxel(world, chunk_pos, chunk_relative_world_pos)
+            self.get_voxel(input, chunk_relative_world_pos)
         };
 
         let top_neighbor = get_neighbor_voxel(0, 1);
@@ -366,5 +321,134 @@ impl<'a> GreedyMesher<'a> {
             ao[i] = occlusion;
         }
         ao
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine::{
+        assets::blocks::{BlockDatabase, BlockDefinition, BlockTextureDefinition, TextureIndices},
+        voxels::{coord::ChunkPos, voxel::Voxel},
+    };
+
+    fn create_test_block_database() -> Arc<BlockDatabase> {
+        let mut db = BlockDatabase::new();
+        db.add_block_from_definition(BlockDefinition {
+            id: 1,
+            name: "test_block".to_string(),
+            textures: BlockTextureDefinition::Invisible,
+        })
+        .unwrap();
+
+        if let Some(entry) = db.get_by_id(engine::assets::blocks::BlockTypeId(1)) {
+            entry.set_texture_indices(TextureIndices::new_single(0));
+        }
+
+        Arc::new(db)
+    }
+
+    #[test]
+    fn test_single_voxel() {
+        let db = create_test_block_database();
+        let mut mesher = GreedyMesher::new(db);
+        let mut input = ChunkMeshGeneratorInput::new_empty(ChunkPos::new(0, 0, 0));
+
+        // Place a single voxel in the center
+        let voxel = Voxel::from_type(1);
+        let center_pos = WorldPos::new(8, 8, 8);
+        input.set_voxel(center_pos, voxel);
+
+        let mesh = mesher.generate_mesh(&input);
+
+        // Should have 6 faces (quads)
+        // Each quad has 4 vertices -> 24 vertices
+        // Each quad has 6 indices -> 36 indices
+        assert_eq!(mesh.vertices.len(), 24);
+        assert_eq!(mesh.indices.len(), 36);
+    }
+
+    #[test]
+    fn test_greedy_meshing_simple() {
+        let db = create_test_block_database();
+        let mut mesher = GreedyMesher::new(db);
+        let mut input = ChunkMeshGeneratorInput::new_empty(ChunkPos::new(0, 0, 0));
+
+        // Place two voxels next to each other along X axis
+        let voxel = Voxel::from_type(1);
+        let p1 = WorldPos::new(8, 8, 8);
+        let p2 = WorldPos::new(9, 8, 8);
+
+        input.set_voxel(p1, voxel);
+        input.set_voxel(p2, voxel);
+
+        let mesh = mesher.generate_mesh(&input);
+
+        // Should have same number of faces as a single voxel, since adjacent voxels are merged
+        assert_eq!(mesh.vertices.len(), 24);
+        assert_eq!(mesh.indices.len(), 36);
+    }
+
+    #[test]
+    fn test_chunk_boundary_culling() {
+        let db = create_test_block_database();
+        let mut mesher = GreedyMesher::new(db);
+        let mut input = ChunkMeshGeneratorInput::new_empty(ChunkPos::new(0, 0, 0));
+
+        let voxel = Voxel::from_type(1);
+
+        // Place voxel at right boundary (x=15)
+        let p1 = WorldPos::new(15, 8, 8);
+        input.set_voxel(p1, voxel);
+
+        // Case 1: Neighbor is empty
+        let mesh = mesher.generate_mesh(&input);
+        // Should generate Right face
+        let has_right_face = mesh.vertices.iter().any(|v| {
+            // Face ID is stored in w component of position (last byte)
+            v.position.w == Face::Right as u8
+        });
+        assert!(
+            has_right_face,
+            "Should generate right face when neighbor is empty"
+        );
+
+        // Case 2: Neighbor has solid block
+        // Update neighbor border (Right neighbor, so we update the Right border)
+        let neighbor_pos = WorldPos::new(16, 8, 8);
+        input.set_voxel(neighbor_pos, voxel);
+
+        let mesh = mesher.generate_mesh(&input);
+        let has_right_face = mesh
+            .vertices
+            .iter()
+            .any(|v| v.position.w == Face::Right as u8);
+        assert!(
+            !has_right_face,
+            "Should NOT generate right face when neighbor is solid"
+        );
+    }
+
+    #[test]
+    fn test_chunk_boundary_no_overlap() {
+        let db = create_test_block_database();
+        let mut mesher = GreedyMesher::new(db);
+        let mut input = ChunkMeshGeneratorInput::new_empty(ChunkPos::new(0, 0, 0));
+
+        let voxel = Voxel::from_type(1);
+
+        // Place voxel in neighbor's border (Right neighbor)
+        let neighbor_pos = WorldPos::new(16, 8, 8);
+        input.set_voxel(neighbor_pos, voxel);
+
+        // Center chunk is empty.
+        // The mesher should NOT generate any faces for the neighbor's voxel.
+
+        let mesh = mesher.generate_mesh(&input);
+        assert_eq!(
+            mesh.vertices.len(),
+            0,
+            "Should not generate faces for neighbor voxels"
+        );
     }
 }

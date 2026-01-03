@@ -6,8 +6,9 @@ use std::{
 
 use bytemuck::Pod;
 
-use crate::rendering::memory::buddy_allocator::{
-    AllocatorConfig, BuddyAllocator, BuddyAllocatorStats,
+use crate::rendering::{
+    buffer_update_batcher::BufferUpdateBatcher,
+    memory::buddy_allocator::{AllocatorConfig, BuddyAllocator, BuddyAllocatorStats},
 };
 
 pub struct GpuHeapHandle<T> {
@@ -36,10 +37,24 @@ impl<T: Pod> GpuHeapHandle<T> {
         self.count
     }
 
+    pub fn buffer(&self) -> &wgpu::Buffer {
+        self.allocator.buffer()
+    }
+
     pub fn write_data(&self, data: &[T]) {
         let byte_data: &[u8] = bytemuck::cast_slice(data);
-        assert!(byte_data.len() as u64 <= self.size);
+        if byte_data.is_empty() {
+            return;
+        }
         self.allocator.write_data(self, bytemuck::cast_slice(data));
+    }
+
+    pub fn wite_data_batched(&self, batcher: &mut BufferUpdateBatcher, data: &[T]) {
+        let byte_data: &[u8] = bytemuck::cast_slice(data);
+        if byte_data.is_empty() {
+            return;
+        }
+        self.allocator.write_data_batched(batcher, self, data);
     }
 }
 
@@ -147,5 +162,16 @@ impl<T: Pod> GpuHeap<T> {
             allocation.byte_offset,
             bytemuck::cast_slice(data),
         );
+    }
+
+    pub fn write_data_batched(
+        &self,
+        batcher: &mut BufferUpdateBatcher,
+        allocation: &GpuHeapHandle<T>,
+        data: &[T],
+    ) {
+        let byte_data: &[u8] = bytemuck::cast_slice(data);
+        assert!(byte_data.len() as u64 <= allocation.size);
+        batcher.add_heap_update(allocation, data);
     }
 }

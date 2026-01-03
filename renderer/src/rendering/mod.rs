@@ -1,8 +1,9 @@
+pub mod buffer_update_batcher;
 pub mod chunk_mesh;
-pub mod chunk_mesh_generator;
 pub mod common;
+pub mod limits;
 pub mod memory;
-pub mod mesh_generations;
+pub mod mesh_generation;
 pub mod passes;
 pub mod postfx;
 pub mod postfx_constants;

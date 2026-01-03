@@ -6,6 +6,7 @@ use wgpu::{
     RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderStages, VertexState,
 };
 
+use crate::rendering::limits::MAX_GPU_CHUNKS;
 use crate::rendering::{
     chunk_mesh::ChunkVertex,
     memory::typed_buffer::{GpuBuffer, GpuBufferArray},
@@ -60,8 +61,6 @@ impl WorldGeometryPass {
                 )
                 .build(device);
 
-        let max_chunks = 32 * 32 * 32;
-
         let culling_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Culling params buffer"),
             size: size_of::<CullingParams>() as u64,
@@ -71,14 +70,14 @@ impl WorldGeometryPass {
 
         let input_chunk_ids_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Input chunk IDs buffer"),
-            size: (max_chunks * size_of::<u32>() as u64),
+            size: (MAX_GPU_CHUNKS * size_of::<u32>() as u64),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let draw_commands_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Draw commands buffer"),
-            size: (max_chunks * size_of::<DrawIndexedIndirectArgs>() as u64),
+            size: (MAX_GPU_CHUNKS * size_of::<DrawIndexedIndirectArgs>() as u64),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
             mapped_at_creation: false,
         });

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use engine::{assets::blocks::BlockDatabase, game_loop::GameLoopTime};
+use engine::{assets::blocks::BlockDatabase, camera::Camera, game_loop::GameLoopTime};
 use wgpu::{RenderPassDescriptor, wgt::CommandEncoderDescriptor};
 use winit::window::Window;
 
@@ -117,6 +117,10 @@ impl Renderer {
         }
     }
 
+    pub fn update_camera(&mut self, camera: &Camera, immediate: bool) {
+        self.world_renderer.update_camera(camera, immediate);
+    }
+
     pub fn update(&mut self, time: &GameLoopTime) {
         self.world_renderer.update(time);
     }
@@ -175,10 +179,8 @@ impl Renderer {
             });
         }
 
-        {
-            self.world_renderer
-                .render(&mut encoder, &view, &self.depth_texture, time);
-        }
+        self.world_renderer
+            .render(&mut encoder, &view, &self.depth_texture, time);
 
         self.queue.submit([encoder.finish()]);
         output.present();

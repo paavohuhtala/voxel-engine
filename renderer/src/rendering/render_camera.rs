@@ -22,7 +22,7 @@ pub struct CameraUniform {
 }
 
 pub struct RenderCamera {
-    pub camera: Interpolated<Camera>,
+    camera: Interpolated<Camera>,
     pub sun_direction: Vec3,
     pub enable_ao: bool,
     resolution: Resolution,
@@ -36,12 +36,8 @@ pub struct RenderCamera {
 }
 
 impl RenderCamera {
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        camera: Camera,
-        resolution: Resolution,
-    ) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, resolution: Resolution) -> Self {
+        let camera = Camera::default();
         let projection_matrix = camera.get_projection_matrix(resolution.to_vec2());
         let view_matrix = camera.get_view_matrix();
         let view_projection_matrix = projection_matrix * view_matrix;

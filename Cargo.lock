@@ -457,6 +457,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -620,6 +629,7 @@ dependencies = [
  "anyhow",
  "bitfield-struct",
  "bytemuck",
+ "crossbeam-channel",
  "dashmap",
  "debounce",
  "glam 0.30.9",
@@ -635,6 +645,7 @@ dependencies = [
  "rayon",
  "ron",
  "serde",
+ "splines",
  "tinyvec",
  "wgpu",
 ]
@@ -2276,6 +2287,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "crossbeam-channel",
  "engine",
  "glam 0.30.9",
  "image",
@@ -2566,6 +2578,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eda41003dc44290527a59b13432d4a0379379fa074b70174882adfbdfd917844"
 dependencies = [
  "bitflags 2.10.0",
+]
+
+[[package]]
+name = "splines"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b882be9bf6b37258bfba80ed5b5eeccccd6700bfbaca202bbd53e4c13bf3daa7"
+dependencies = [
+ "glam 0.30.9",
 ]
 
 [[package]]

@@ -20,14 +20,56 @@ use crate::config::ClientConfig;
 pub struct ClientGame {
     should_exit: bool,
     renderer: Option<Renderer>,
-    engine_context: EngineContext,
+    ctx: EngineContext,
     client_config: ConfigManager<ClientConfig>,
 }
 
 impl Game for ClientGame {
     #[profiling::function]
     fn update(&mut self, time: &GameLoopTime) -> anyhow::Result<()> {
-        self.engine_context.physics.update(time.delta_time_s as f32);
+        self.ctx.physics.update(time.delta_time_s as f32);
+        self.ctx.player.update(time);
+
+        self.ctx
+            .world
+            .chunk_loader
+            .update_camera_position(self.ctx.player.camera.get_current_chunk());
+
+        self.ctx.world.update();
+
+        // TODO: Reuse vec
+        let mut chunks_to_mesh = Vec::new();
+        self.ctx
+            .world
+            .get_chunks_ready_for_meshing(&mut chunks_to_mesh);
+
+        for pos in chunks_to_mesh {
+            self.renderer
+                .as_mut()
+                .unwrap()
+                .world_renderer
+                .mesh_generator
+                .generate_chunk_mesh_async(&self.ctx.world, pos);
+        }
+
+        // Unload chunks
+        let mut chunks_to_unload = Vec::new();
+        self.ctx
+            .world
+            .get_chunks_ready_to_unload(&mut chunks_to_unload);
+
+        for pos in chunks_to_unload {
+            self.renderer
+                .as_mut()
+                .unwrap()
+                .world_renderer
+                .remove_chunk(pos);
+        }
+
+        self.renderer
+            .as_mut()
+            .unwrap()
+            .update_camera(&self.ctx.player.camera, false);
         self.renderer.as_mut().unwrap().update(time);
         Ok(())
     }
@@ -47,7 +89,7 @@ impl ClientGame {
         ClientGame {
             should_exit: false,
             renderer: None,
-            engine_context,
+            ctx: engine_context,
             client_config,
         }
     }
@@ -57,24 +99,23 @@ impl ClientGame {
     }
 
     pub fn on_resumed(&mut self, window: Arc<Window>) {
-        let mut renderer = pollster::block_on(Renderer::new(
-            window,
-            self.engine_context.block_database.clone(),
-        ))
-        .context("Failed to create the renderer")
-        .unwrap();
+        let mut renderer =
+            pollster::block_on(Renderer::new(window, self.ctx.block_database.clone()))
+                .context("Failed to create the renderer")
+                .unwrap();
+
+        // Copy initial camera state
+        renderer.update_camera(&self.ctx.player.camera, true);
 
         // Load textures and create chunks (again)
-        let block_database = self.engine_context.block_database.clone();
+        let block_database = self.ctx.block_database.clone();
 
         renderer
             .world_renderer
             .texture_manager
             .load_all_textures(block_database.iter_blocks())
             .expect("Failed to load block materials");
-        renderer
-            .world_renderer
-            .create_all_chunks(&self.engine_context.world);
+        renderer.world_renderer.create_all_chunks(&self.ctx.world);
 
         self.renderer = Some(renderer);
     }

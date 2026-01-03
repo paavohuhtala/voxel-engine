@@ -7,18 +7,23 @@ use crate::{
         engine_config::EngineConfig,
     },
     gameplay::physics::world_collider::PhysicsWorld,
-    voxels::{coord::WorldPos, world::World},
-    worldgen::{generate_noise_world, text_generator::draw_text},
+    player::Player,
+    voxels::coord::WorldPos,
+    world::World,
+    worldgen::{draw_text, generate_noise_world},
 };
 
 pub mod assets;
 pub mod camera;
+pub mod chunk_loader;
 pub mod config;
 pub mod game_loop;
 pub mod gameplay;
 pub mod math;
 pub mod memory;
+pub mod player;
 pub mod voxels;
+pub mod world;
 pub mod worldgen;
 
 pub struct EngineContext {
@@ -26,6 +31,8 @@ pub struct EngineContext {
     pub world: World,
     pub block_database: Arc<BlockDatabase>,
     pub physics: PhysicsWorld,
+    // TODO: Multiplayer, make this optional
+    pub player: Player,
 }
 
 pub fn init_engine() -> anyhow::Result<EngineContext> {
@@ -43,14 +50,13 @@ pub fn init_engine() -> anyhow::Result<EngineContext> {
     let world = generate_noise_world(16);
     draw_text(&world, WorldPos::new(0, 16, 0), &font, "Hello, world!");
 
-    let mut physics = PhysicsWorld::new();
-    physics.add_all_chunks(&world);
-    physics.spawn_debug_ball();
+    let physics = PhysicsWorld::new();
 
     Ok(EngineContext {
         config,
         world,
         block_database,
         physics,
+        player: Player::new(),
     })
 }

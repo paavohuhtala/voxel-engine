@@ -1,9 +1,8 @@
 use std::collections::HashSet;
 
 use glam::U8Vec3;
-use tinyvec::ArrayVec;
 
-use crate::voxels::{coord::LocalPos, face::Face, voxel::Voxel};
+use crate::voxels::{coord::LocalPos, unpacked_chunk::UnpackedChunk, voxel::Voxel};
 
 #[derive(Default, Clone)]
 pub struct Palette {
@@ -265,10 +264,39 @@ impl PackedChunk {
     }
 
     /**
-     * Unpack the chunk into a flat vector of voxels in YZX order
+     * Unpack the chunk into a flat vector of voxels in YZX order.
+     * More efficient than iteration, if you just need the raw data.
      */
-    pub fn unpack(&self, voxels: &mut Vec<Voxel>) {
-        voxels.extend(self.iter_voxels().map(|(_, voxel)| voxel));
+    pub fn unpack(&self, voxels: &mut [Voxel]) {
+        let bits = self.bits_per_voxel as usize;
+        if bits == 0 {
+            // Fast path: all voxels are the same
+            let voxel = self.palette.get_voxel_type(0).unwrap_or_default();
+            voxels.fill(voxel);
+            return;
+        }
+
+        let voxels_per_u64 = 64 / bits;
+        let mask = self.bit_mask;
+
+        let mut index = 0;
+
+        for &word in self.data.iter() {
+            let mut current_word = word;
+            for _ in 0..voxels_per_u64 {
+                if index >= CHUNK_VOLUME {
+                    break;
+                }
+
+                let voxel = self
+                    .palette
+                    .get_voxel_type((current_word & mask) as usize)
+                    .unwrap_or_default();
+                voxels[index] = voxel;
+                current_word >>= bits;
+                index += 1;
+            }
+        }
     }
 
     pub fn compact(&mut self) {
@@ -431,29 +459,6 @@ impl Chunk {
         }
     }
 
-    pub fn get_neighbors(&self, coord: LocalPos) -> ArrayVec<[(Face, Voxel); 6]> {
-        let mut neighbors = ArrayVec::new();
-        for face in Face::all() {
-            if let Some(neighbor_coord) = coord.offset(face)
-                && let Some(voxel) = self.get_voxel(neighbor_coord)
-            {
-                neighbors.push((face, voxel));
-            }
-        }
-        neighbors
-    }
-
-    pub fn from_voxels(data: &[Voxel]) -> Self {
-        // If all voxels are the same, return a solid chunk
-        let first = data[0];
-        let all_same = data.iter().all(|&v| v == first);
-        if all_same {
-            Chunk::Solid(first)
-        } else {
-            Chunk::Packed(PackedChunk::pack(data))
-        }
-    }
-
     pub fn iter_voxels(&self) -> Box<dyn Iterator<Item = (LocalPos, Voxel)> + '_> {
         match self {
             Chunk::Solid(voxel) => {
@@ -465,6 +470,31 @@ impl Chunk {
             }
             Chunk::Packed(packed) => Box::new(packed.iter_voxels()),
         }
+    }
+}
+
+impl From<PackedChunk> for Chunk {
+    fn from(value: PackedChunk) -> Self {
+        Chunk::Packed(value)
+    }
+}
+
+impl From<&[Voxel]> for Chunk {
+    fn from(data: &[Voxel]) -> Self {
+        // If all voxels are the same, return a solid chunk
+        let first = data[0];
+        let all_same = data.iter().all(|&v| v == first);
+        if all_same {
+            Chunk::Solid(first)
+        } else {
+            Chunk::Packed(PackedChunk::pack(data))
+        }
+    }
+}
+
+impl From<UnpackedChunk> for Chunk {
+    fn from(value: UnpackedChunk) -> Self {
+        Chunk::from(value.voxels.as_slice())
     }
 }
 
@@ -625,47 +655,5 @@ mod tests {
         } else {
             panic!("Chunk should be packed");
         }
-    }
-
-    #[test]
-    fn test_get_neighbors() {
-        let mut chunk = Chunk::solid(Voxel::AIR);
-        let stone = Voxel::from_type(1);
-        let center = LocalPos::new(1, 1, 1);
-
-        // Set center to stone
-        chunk.set_voxel(center, stone);
-
-        // Neighbors should be Air (default)
-        let neighbors = chunk.get_neighbors(center);
-        assert_eq!(neighbors.len(), 6);
-        for (_, voxel) in neighbors {
-            assert_eq!(voxel, Voxel::AIR);
-        }
-
-        // Set a neighbor
-        let top = LocalPos::new(1, 2, 1);
-        chunk.set_voxel(top, stone);
-
-        let neighbors = chunk.get_neighbors(center);
-        for (face, voxel) in neighbors {
-            if face == Face::Top {
-                assert_eq!(voxel, stone);
-            } else {
-                assert_eq!(voxel, Voxel::AIR);
-            }
-        }
-
-        // Test boundary
-        let corner = LocalPos::new(0, 0, 0);
-        let neighbors = chunk.get_neighbors(corner);
-        // Should have 3 neighbors (Right, Top, Back) inside the chunk
-        // Left, Bottom, Front are outside
-        assert_eq!(neighbors.len(), 3);
-
-        let faces: Vec<Face> = neighbors.into_iter().map(|(f, _)| f).collect();
-        assert!(faces.contains(&Face::Right));
-        assert!(faces.contains(&Face::Top));
-        assert!(faces.contains(&Face::Back));
     }
 }

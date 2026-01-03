@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use engine::game_loop::GameLoopTime;
+
 use crate::rendering::{
     common::FullscreenVertexShader,
     passes::postfx::{fxaa::FXAAPass, noise::NoisePass},
@@ -73,8 +75,8 @@ impl PostFxRenderer {
         }
     }
 
-    pub fn update(&mut self, time: f32) {
-        self.constants_buffer.update(time);
+    pub fn update(&mut self, time: &GameLoopTime) {
+        self.constants_buffer.update(time.elapsed_time_s as f32);
     }
 
     pub fn render(&self, encoder: &mut wgpu::CommandEncoder, output_view: &wgpu::TextureView) {

@@ -87,6 +87,9 @@ impl<G: Game> GameLoop<G> {
             blending_factor: self.blending_factor,
         };
         self.game.render(&time)?;
+        self.number_of_renders += 1;
+
+        self.previous_instant = self.current_instant;
 
         Ok(GameLoopResult::Continue)
     }

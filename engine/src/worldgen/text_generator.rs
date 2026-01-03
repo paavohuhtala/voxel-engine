@@ -1,6 +1,7 @@
 use crate::{
     assets::fonts::{Font, FontGlyph},
-    voxels::{coord::WorldPos, voxel::Voxel, world::World},
+    voxels::{coord::WorldPos, voxel::Voxel},
+    world::World,
 };
 
 const EMPTY_VOXEL: Voxel = Voxel::AIR;

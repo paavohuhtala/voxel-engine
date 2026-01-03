@@ -1,7 +1,7 @@
 use std::mem::offset_of;
 
 use bytemuck::{Pod, Zeroable};
-use glam::{IVec3, IVec4, U8Vec3, U8Vec4};
+use glam::{IVec4, U8Vec3, U8Vec4};
 use wgpu::{VertexAttribute, VertexBufferLayout};
 
 use engine::{
@@ -55,7 +55,7 @@ impl ChunkVertex {
 
 #[derive(Clone, Default)]
 pub struct ChunkMeshData {
-    pub position: IVec3,
+    pub position: ChunkPos,
     pub aabb: AABB8,
     pub vertices: Vec<ChunkVertex>,
     pub indices: Vec<u16>,
@@ -66,9 +66,9 @@ impl ChunkMeshData {
         Self::default()
     }
 
-    pub fn from_position(pos: ChunkPos) -> Self {
+    pub fn from_position(position: ChunkPos) -> Self {
         ChunkMeshData {
-            position: pos.0,
+            position,
             aabb: AABB8::new(U8Vec3::splat(0), U8Vec3::splat(15)),
             vertices: Vec::new(),
             indices: Vec::new(),
@@ -77,7 +77,7 @@ impl ChunkMeshData {
 }
 
 pub struct ChunkMesh {
-    pub position: IVec3,
+    pub position: ChunkPos,
     pub aabb: AABB8,
     pub vertices_handle: GpuHeapHandle<ChunkVertex>,
     pub indices_handle: GpuHeapHandle<u16>,
