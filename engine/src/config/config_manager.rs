@@ -32,7 +32,7 @@ pub trait Config:
     fn create_manager() -> anyhow::Result<ConfigManager<Self>> {
         let mut manager = ConfigManager::new(PathBuf::from(Self::get_path()));
         manager
-            .load_if_exists()
+            .load_or_create_file()
             .with_context(|| format!("Failed to load config from {}", Self::get_path()))?;
         Ok(manager)
     }
@@ -77,7 +77,7 @@ where
         self.current.clone()
     }
 
-    pub fn load_if_exists(&mut self) -> anyhow::Result<()> {
+    pub fn load_or_create_file(&mut self) -> anyhow::Result<()> {
         if self.path.exists() {
             let config_data = std::fs::read_to_string(&self.path)?;
 
@@ -89,6 +89,9 @@ where
                 .with_context(|| format!("Failed to parse config from {:?}", &self.path))?;
             // TODO: Handle invalid config gracefully
             self.current.write().unwrap().clone_from(&config);
+        } else {
+            // File does not exist, save default config
+            self.debouncer.put(UpdateConfigEvent);
         }
         Ok(())
     }

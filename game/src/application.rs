@@ -48,6 +48,11 @@ impl ApplicationHandler for Application {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let Some(egui_renderer) = &mut self.game_loop.game.egui {
+            // TODO: If egui handles the event, don't pass it to the game
+            let _ = egui_renderer.handle_input(&event);
+        }
+
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {

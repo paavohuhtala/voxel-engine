@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
+use egui_wgpu::ScreenDescriptor;
 use renderer::{renderer::Renderer, rendering::resolution::Resolution};
 use winit::{
     dpi::PhysicalPosition,
@@ -15,16 +16,25 @@ use engine::{
     game_loop::{Game, GameLoopTime},
 };
 
-use crate::config::ClientConfig;
+use crate::{config::ClientConfig, egui::egui_instance::EguiInstance, fps_counter::FpsCounter};
 
 pub struct ClientGame {
     should_exit: bool,
     renderer: Option<Renderer>,
+    pub egui: Option<EguiInstance>,
     ctx: EngineContext,
     client_config: ConfigManager<ClientConfig>,
+    fps_counter: FpsCounter,
 }
 
 impl Game for ClientGame {
+    fn before_update(&mut self) {
+        if let Some(egui_renderer) = &mut self.egui {
+            egui_renderer.begin_frame();
+        }
+        self.fps_counter.tick();
+    }
+
     #[profiling::function]
     fn update(&mut self, time: &GameLoopTime) -> anyhow::Result<()> {
         self.ctx.physics.update(time.delta_time_s as f32);
@@ -76,10 +86,34 @@ impl Game for ClientGame {
 
     #[profiling::function]
     fn render(&mut self, time: &GameLoopTime) -> anyhow::Result<()> {
+        self.draw_egui();
+
         let Some(renderer) = &mut self.renderer else {
             return Ok(());
         };
-        renderer.render(time)?;
+
+        let egui_renderer = &mut self.egui;
+
+        renderer.render(
+            time,
+            Some(
+                |encoder: &mut egui_wgpu::wgpu::CommandEncoder,
+                 view: &egui_wgpu::wgpu::TextureView,
+                 descriptor: renderer::renderer::ScreenDescriptor| {
+                    if let Some(egui_instance) = egui_renderer {
+                        egui_instance.end_frame_and_draw(
+                            encoder,
+                            view,
+                            ScreenDescriptor {
+                                size_in_pixels: descriptor.size_in_pixels,
+                                pixels_per_point: descriptor.pixels_per_point,
+                            },
+                        );
+                    }
+                },
+            ),
+        )?;
+
         Ok(())
     }
 }
@@ -89,8 +123,10 @@ impl ClientGame {
         ClientGame {
             should_exit: false,
             renderer: None,
+            egui: None,
             ctx: engine_context,
             client_config,
+            fps_counter: FpsCounter::new(),
         }
     }
 
@@ -98,11 +134,24 @@ impl ClientGame {
         self.should_exit
     }
 
+    fn draw_egui(&mut self) {
+        let Some(egui_renderer) = &mut self.egui else {
+            return;
+        };
+
+        self.fps_counter.draw_ui(egui_renderer.ctx());
+    }
+
     pub fn on_resumed(&mut self, window: Arc<Window>) {
-        let mut renderer =
-            pollster::block_on(Renderer::new(window, self.ctx.block_database.clone()))
-                .context("Failed to create the renderer")
-                .unwrap();
+        let mut renderer = pollster::block_on(Renderer::new(
+            window.clone(),
+            self.ctx.block_database.clone(),
+        ))
+        .context("Failed to create the renderer")
+        .unwrap();
+
+        let egui_renderer = EguiInstance::new(window.clone(), &renderer.device, &renderer.queue);
+        self.egui = Some(egui_renderer);
 
         // Copy initial camera state
         renderer.update_camera(&self.ctx.player.camera, true);

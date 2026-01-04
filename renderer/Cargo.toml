@@ -19,6 +19,7 @@ image = { version = "0.25.9", default-features = false, features = [
 ordered-float = "5.1.0"
 rayon = "1.11.0"
 crossbeam-channel = "0.5.15"
+serde = { version = "1.0.228", features = ["derive"] }
 
 [build-dependencies]
 wesl = "0.3.1"

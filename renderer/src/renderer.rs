@@ -1,22 +1,35 @@
 use std::sync::Arc;
 
-use engine::{assets::blocks::BlockDatabase, camera::Camera, game_loop::GameLoopTime};
+use engine::{
+    assets::blocks::BlockDatabase,
+    camera::Camera,
+    config::config_manager::{Config, ConfigManager},
+    game_loop::GameLoopTime,
+};
 use wgpu::{RenderPassDescriptor, wgt::CommandEncoderDescriptor};
 use winit::window::Window;
 
-use crate::rendering::{
-    resolution::Resolution, texture::DepthTexture, world_renderer::WorldRenderer,
+use crate::{
+    renderer_config::RendererConfig,
+    rendering::{resolution::Resolution, texture::DepthTexture, world_renderer::WorldRenderer},
 };
 
 pub struct Renderer {
+    _config: ConfigManager<RendererConfig>,
     surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    surface_config: wgpu::SurfaceConfiguration,
     depth_texture: DepthTexture,
     is_surface_configured: bool,
     window: Arc<Window>,
     pub world_renderer: WorldRenderer,
+}
+
+// This is essentially a copy of egui_wgpu::ScreenDescriptor to avoid adding a dependency on egui_wgpu
+pub struct ScreenDescriptor {
+    pub size_in_pixels: [u32; 2],
+    pub pixels_per_point: f32,
 }
 
 impl Renderer {
@@ -24,6 +37,10 @@ impl Renderer {
         window: Arc<Window>,
         block_database: Arc<BlockDatabase>,
     ) -> anyhow::Result<Self> {
+        let config_manager =
+            RendererConfig::create_manager().expect("Failed to create or load renderer config");
+        let config = config_manager.get().read().unwrap().clone();
+
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let window_clone = window.clone();
@@ -66,11 +83,15 @@ impl Renderer {
             }
             #[cfg(not(feature = "superluminal"))]
             {
-                wgpu::PresentMode::AutoVsync
+                if config.enable_vsync {
+                    wgpu::PresentMode::AutoVsync
+                } else {
+                    wgpu::PresentMode::AutoNoVsync
+                }
             }
         };
 
-        let config = wgpu::SurfaceConfiguration {
+        let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width: size.width,
@@ -93,10 +114,11 @@ impl Renderer {
         let world_renderer = WorldRenderer::new(&device, &queue, size, block_database.clone());
 
         Ok(Renderer {
+            _config: config_manager,
             surface,
             device,
             queue,
-            config,
+            surface_config,
             depth_texture,
             is_surface_configured: false,
             window,
@@ -106,9 +128,9 @@ impl Renderer {
 
     pub fn resize(&mut self, size: Resolution) {
         if size.width > 0 && size.height > 0 {
-            self.config.width = size.width;
-            self.config.height = size.height;
-            self.surface.configure(&self.device, &self.config);
+            self.surface_config.width = size.width;
+            self.surface_config.height = size.height;
+            self.surface.configure(&self.device, &self.surface_config);
             self.depth_texture.resize(&self.device, size);
             self.is_surface_configured = true;
             self.world_renderer.resize(size);
@@ -125,7 +147,13 @@ impl Renderer {
         self.world_renderer.update(time);
     }
 
-    pub fn render(&mut self, time: &GameLoopTime) -> anyhow::Result<()> {
+    pub fn render(
+        &mut self,
+        time: &GameLoopTime,
+        additional_render: Option<
+            impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, ScreenDescriptor),
+        >,
+    ) -> anyhow::Result<()> {
         self.window.request_redraw();
 
         if !self.is_surface_configured {
@@ -136,8 +164,8 @@ impl Renderer {
             Ok(output) => output,
             Err(wgpu::SurfaceError::Lost) => {
                 self.resize(Resolution {
-                    width: self.config.width,
-                    height: self.config.height,
+                    width: self.surface_config.width,
+                    height: self.surface_config.height,
                 });
                 return Ok(());
             }
@@ -181,6 +209,14 @@ impl Renderer {
 
         self.world_renderer
             .render(&mut encoder, &view, &self.depth_texture, time);
+
+        if let Some(additional_render_fn) = additional_render {
+            let descriptor = ScreenDescriptor {
+                size_in_pixels: [self.surface_config.width, self.surface_config.height],
+                pixels_per_point: self.window.scale_factor() as f32,
+            };
+            additional_render_fn(&mut encoder, &view, descriptor);
+        }
 
         self.queue.submit([encoder.finish()]);
         output.present();

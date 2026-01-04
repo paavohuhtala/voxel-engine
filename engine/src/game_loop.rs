@@ -4,6 +4,7 @@ use std::time::Instant;
 // Which is based on the classic article https://gafferongames.com/post/fix_your_timestep/
 
 pub trait Game {
+    fn before_update(&mut self) {}
     fn update(&mut self, time: &GameLoopTime) -> anyhow::Result<()>;
     fn render(&mut self, _time: &GameLoopTime) -> anyhow::Result<()> {
         Ok(())
@@ -66,6 +67,8 @@ impl<G: Game> GameLoop<G> {
         self.last_frame_time_s = elapsed_s;
         self.running_time_s += elapsed_s;
         self.accumulated_time_s += elapsed_s;
+
+        self.game.before_update();
 
         while self.accumulated_time_s >= self.fixed_time_step_s {
             let time = GameLoopTime {
