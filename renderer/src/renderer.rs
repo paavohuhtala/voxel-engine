@@ -155,10 +155,6 @@ impl Renderer {
         self.world_renderer.set_camera(camera);
     }
 
-    pub fn update(&mut self, time: &GameLoopTime) {
-        self.world_renderer.update(time);
-    }
-
     pub fn render(
         &mut self,
         time: &GameLoopTime,

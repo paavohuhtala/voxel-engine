@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, mem::size_of};
 
 use glam::U8Vec3;
 
@@ -70,6 +70,10 @@ impl Palette {
         let count = self.voxel_types.len();
 
         (count as f32).log2().ceil() as usize
+    }
+
+    pub fn approximate_size(&self) -> usize {
+        size_of::<Self>() + self.voxel_types.capacity() * size_of::<Voxel>()
     }
 }
 
@@ -365,6 +369,10 @@ impl PackedChunk {
         let palette = Palette::from_voxel_types(&[voxel]);
         *self = PackedChunk::new_with_palette(palette);
     }
+
+    pub fn approximate_size(&self) -> usize {
+        size_of::<Self>() + self.data.len() * size_of::<u64>() + self.palette.approximate_size()
+    }
 }
 
 impl Chunk {
@@ -472,6 +480,13 @@ impl Chunk {
                 Box::new(iter)
             }
             Chunk::Packed(packed) => Box::new(packed.iter_voxels()),
+        }
+    }
+
+    pub fn approximate_size(&self) -> usize {
+        match self {
+            Chunk::Solid(_) => size_of::<Self>(),
+            Chunk::Packed(packed) => size_of::<Self>() + packed.approximate_size(),
         }
     }
 }

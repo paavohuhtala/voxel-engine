@@ -4,6 +4,7 @@ use anyhow::Context;
 use bytemuck::{Pod, Zeroable};
 use crossbeam_channel::Receiver;
 use glam::Vec3;
+use offset_allocator::StorageReport;
 use ordered_float::OrderedFloat;
 use rayon::prelude::*;
 
@@ -137,6 +138,14 @@ pub struct WorldRenderer {
     /// Either the camera has moved to a new chunk, or new chunks have been generated
     chunks_changed: bool,
     chunk_ids: Vec<u32>,
+}
+
+pub struct WorldRendererStatistics {
+    pub loaded_chunks: usize,
+    pub chunk_buffer_capacity: u64,
+    pub chunk_buffer_used: u64,
+    pub face_buffer_capacity_bytes: u64,
+    pub face_buffer_storage_report: StorageReport,
 }
 
 impl WorldRenderer {
@@ -380,6 +389,13 @@ impl WorldRenderer {
         }
     }
 
-    #[profiling::function]
-    pub fn update(&mut self, _time: &GameLoopTime) {}
+    pub fn get_statistics(&self) -> WorldRendererStatistics {
+        WorldRendererStatistics {
+            loaded_chunks: self.render_chunks.len(),
+            chunk_buffer_capacity: self.buffers.chunks.capacity(),
+            chunk_buffer_used: self.buffers.chunks.used(),
+            face_buffer_capacity_bytes: self.buffers.faces.capacity_bytes() as u64,
+            face_buffer_storage_report: self.buffers.faces.storage_report(),
+        }
+    }
 }

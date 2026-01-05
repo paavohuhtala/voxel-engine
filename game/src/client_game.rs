@@ -16,7 +16,11 @@ use engine::{
     game_loop::{Game, GameLoopTime},
 };
 
-use crate::{config::ClientConfig, egui::egui_instance::EguiInstance, fps_counter::FpsCounter};
+use crate::{
+    config::ClientConfig,
+    egui::{egui_instance::EguiInstance, world_stats::draw_world_stats_ui},
+    fps_counter::FpsCounter,
+};
 
 pub struct ClientGame {
     should_exit: bool,
@@ -77,7 +81,6 @@ impl Game for ClientGame {
                 .remove_chunk(pos);
         }
 
-        self.renderer.as_mut().unwrap().update(time);
         Ok(())
     }
 
@@ -141,6 +144,12 @@ impl ClientGame {
         };
 
         self.fps_counter.draw_ui(egui_renderer.ctx());
+
+        draw_world_stats_ui(
+            &self.renderer.as_ref().unwrap().world_renderer,
+            &self.ctx.world,
+            egui_renderer.ctx(),
+        );
     }
 
     pub fn on_resumed(&mut self, window: Arc<Window>) {

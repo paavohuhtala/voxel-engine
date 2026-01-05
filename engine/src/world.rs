@@ -20,6 +20,7 @@ pub struct World {
 
     ready_for_meshing: HashSet<ChunkPos>,
     ready_to_unload: HashSet<ChunkPos>,
+    last_statistics: WorldStatistics,
 }
 
 impl World {
@@ -32,6 +33,10 @@ impl World {
             chunk_loader_receiver,
             ready_for_meshing: HashSet::new(),
             ready_to_unload: HashSet::new(),
+            last_statistics: WorldStatistics {
+                total_loaded_chunks: 0,
+                approximate_memory_usage_bytes: 0,
+            },
         }
     }
 
@@ -46,6 +51,10 @@ impl World {
             chunk_loader_receiver,
             ready_for_meshing: HashSet::new(),
             ready_to_unload: HashSet::new(),
+            last_statistics: WorldStatistics {
+                total_loaded_chunks: 0,
+                approximate_memory_usage_bytes: 0,
+            },
         }
     }
 
@@ -121,6 +130,7 @@ impl World {
 
         if added > 0 || removed > 0 {
             log::debug!("World update: +{} -{} chunks", added, removed);
+            self.update_statistics();
         }
     }
 
@@ -131,4 +141,27 @@ impl World {
     pub fn get_chunks_ready_to_unload(&mut self, chunk_positions: &mut Vec<ChunkPos>) {
         chunk_positions.extend(self.ready_to_unload.drain());
     }
+
+    fn update_statistics(&mut self) {
+        let total_loaded_chunks = self.chunks.len();
+        let approximate_memory_usage_bytes: usize = self
+            .chunks
+            .iter()
+            .map(|entry| entry.value().approximate_size())
+            .sum();
+
+        self.last_statistics = WorldStatistics {
+            total_loaded_chunks,
+            approximate_memory_usage_bytes,
+        };
+    }
+
+    pub fn get_statistics(&self) -> &WorldStatistics {
+        &self.last_statistics
+    }
+}
+
+pub struct WorldStatistics {
+    pub total_loaded_chunks: usize,
+    pub approximate_memory_usage_bytes: usize,
 }

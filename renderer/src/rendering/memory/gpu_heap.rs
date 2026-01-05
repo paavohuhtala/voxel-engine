@@ -5,7 +5,7 @@ use std::{
 };
 
 use bytemuck::Pod;
-use offset_allocator::{Allocation, Allocator};
+use offset_allocator::{Allocation, Allocator, StorageReport};
 
 use crate::rendering::buffer_update_batcher::BufferUpdateBatcher;
 
@@ -138,6 +138,15 @@ impl<T> GpuHeap<T> {
 
     pub fn allocator(&self) -> &RwLock<Allocator> {
         &self.allocator
+    }
+
+    pub fn capacity_bytes(&self) -> u32 {
+        self.size_bytes
+    }
+
+    pub fn storage_report(&self) -> StorageReport {
+        let allocator = self.allocator.read().unwrap();
+        allocator.storage_report()
     }
 }
 

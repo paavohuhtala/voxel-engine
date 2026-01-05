@@ -89,6 +89,10 @@ impl<T> GpuPool<T> {
     pub fn buffer(&self) -> &wgpu::Buffer {
         &self.buffer
     }
+
+    pub fn used(&self) -> u64 {
+        self.pool.read().unwrap().used()
+    }
 }
 
 impl<T: Pod> GpuPool<T> {
