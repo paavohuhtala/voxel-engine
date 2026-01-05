@@ -3,12 +3,19 @@ use splines::{Interpolation, Key, Spline};
 
 use crate::{camera::Camera, game_loop::GameLoopTime};
 
+#[allow(unused)]
+enum CameraMode {
+    Rotate { angle: f32 },
+    Path { progress: f32 },
+}
+
 pub struct Player {
     pub camera: Camera,
     pub is_local: bool,
 
-    path_progress: f32,
     camera_path: Spline<f32, Vec3>,
+    camera_mode: CameraMode,
+    pub should_move_camera: bool,
 }
 
 impl Player {
@@ -37,23 +44,43 @@ impl Player {
         Player {
             camera,
             is_local: true,
-            path_progress: 0.0,
             camera_path,
+            camera_mode: CameraMode::Rotate { angle: 0.0 },
+            should_move_camera: true,
         }
     }
 
     pub fn update(&mut self, time: &GameLoopTime) {
-        self.path_progress += time.delta_time_s as f32;
-
-        if self.path_progress >= 89.0 {
-            self.path_progress = 0.0;
+        if !self.should_move_camera {
+            return;
         }
 
-        let eye = self.camera_path.clamped_sample(self.path_progress).unwrap();
-        let target = self
-            .camera_path
-            .clamped_sample(self.path_progress + 1.0)
-            .unwrap();
+        let (eye, target) = match self.camera_mode {
+            CameraMode::Path { mut progress } => {
+                progress += time.delta_time_s as f32;
+
+                if progress >= 89.0 {
+                    progress = 0.0;
+                }
+
+                self.camera_mode = CameraMode::Path { progress };
+
+                let eye = self.camera_path.clamped_sample(progress).unwrap();
+                let target = self.camera_path.clamped_sample(progress + 1.0).unwrap();
+
+                (eye, target)
+            }
+            CameraMode::Rotate { mut angle } => {
+                angle += time.delta_time_s as f32 * 0.5;
+                self.camera_mode = CameraMode::Rotate { angle };
+
+                let radius = 32.0;
+                self.camera.eye = Vec3::new(angle.sin() * radius, 32.0, angle.cos() * radius);
+
+                let target = Vec3::new(0.0, 0.0, 0.0);
+                (self.camera.eye, target)
+            }
+        };
 
         self.camera = Camera {
             eye,

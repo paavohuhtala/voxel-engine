@@ -40,6 +40,30 @@ impl<T> GpuBuffer<T> {
         }
     }
 
+    pub fn from_data(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &str,
+        usages: wgpu::BufferUsages,
+        data: &T,
+    ) -> Self
+    where
+        T: Pod,
+    {
+        let byte_data: &[u8] = bytemuck::bytes_of(data);
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents: byte_data,
+            usage: usages,
+        });
+
+        GpuBuffer {
+            inner: buffer,
+            queue: queue.clone(),
+            _marker: PhantomData,
+        }
+    }
+
     pub fn inner(&self) -> &wgpu::Buffer {
         &self.inner
     }

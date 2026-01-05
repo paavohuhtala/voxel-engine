@@ -2775,6 +2775,7 @@ name = "renderer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bitfield-struct",
  "bytemuck",
  "crossbeam-channel",
  "engine",
@@ -3721,9 +3722,9 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "wesl"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3863fd5329b3134b7cc8d65b563c68b14b115249e00e6bf8c41d976a359c5f53"
+checksum = "be113b462f90d3e303324739a4431bc63dfd0b463d7582cc76c1fd2093b5d470"
 dependencies = [
  "annotate-snippets",
  "derive_more",
@@ -3738,9 +3739,9 @@ dependencies = [
 
 [[package]]
 name = "wesl-macros"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2df247a8c89b469bb0e8a9df58ca3d45f109ffa2991ac6507f256129ae27f58a"
+checksum = "5d321ea9e1cc0a2e3de41c02e3a7586695a9c03beccb5460e938a7ccf00cb612"
 dependencies = [
  "itertools",
  "proc-macro2",
@@ -3900,9 +3901,9 @@ dependencies = [
 
 [[package]]
 name = "wgsl-parse"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32a30c22ab4d8ddf0ddec12d43ffe6370dcbe9d122ba2e1116303e8bc475b7e9"
+checksum = "946419efa46664a8070c512fb358ac4acfc6e6215c2396ae5afeb9b72dd6ca7d"
 dependencies = [
  "annotate-snippets",
  "derive_more",
@@ -3917,9 +3918,9 @@ dependencies = [
 
 [[package]]
 name = "wgsl-types"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a86fa6bbd5c059a7613c8384177a73fc7980f7912c62de9e965b61454ccb0b8f"
+checksum = "7aed068ca1dc8fb182f574c9f2ace45ec988c71ba050f6dd334883fe3b8a88e2"
 dependencies = [
  "half",
  "itertools",

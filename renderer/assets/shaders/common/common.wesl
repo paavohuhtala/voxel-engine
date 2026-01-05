@@ -1,10 +1,10 @@
 
 struct Chunk {
     position: vec4<i32>,
-    mesh_data_index_offset: u32,
-    mesh_data_index_count: u32,
-    mesh_data_vertex_offset: i32,
-    aabb: u32
+    face_data_offset: u32,
+    face_count: u32,
+    aabb: u32,
+    padding: u32,
 }
 
 struct Camera {
@@ -12,4 +12,5 @@ struct Camera {
     view_proj_inverse: mat4x4<f32>,
     camera_position: vec4<f32>,
     sun_direction: vec4<f32>,
+    flags: vec4<u32>,
 }

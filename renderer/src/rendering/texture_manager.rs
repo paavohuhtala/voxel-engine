@@ -7,7 +7,7 @@ use image::{
 use wgpu::{TexelCopyBufferLayout, TexelCopyTextureInfo};
 
 use engine::{
-    assets::blocks::{BlockDatabaseEntry, BlockTextures, TextureIndices},
+    assets::blocks::{BlockDatabase, BlockDatabaseEntry, BlockTextures, TextureIndices},
     memory::pool::Pool,
 };
 
@@ -167,11 +167,8 @@ impl TextureManager {
         })
     }
 
-    pub fn load_all_textures<'a>(
-        &mut self,
-        blocks: impl Iterator<Item = &'a BlockDatabaseEntry>,
-    ) -> anyhow::Result<()> {
-        for block in blocks {
+    pub fn load_all_textures(&mut self, block_database: &BlockDatabase) -> anyhow::Result<()> {
+        for block in block_database.iter_blocks() {
             self.load_block_textures(block)?;
         }
 

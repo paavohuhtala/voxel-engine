@@ -8,7 +8,6 @@ use wgpu::{
 
 use crate::rendering::limits::MAX_GPU_CHUNKS;
 use crate::rendering::{
-    chunk_mesh::ChunkVertex,
     memory::typed_buffer::{GpuBuffer, GpuBufferArray},
     texture::DepthTexture,
     texture_manager::TextureManager,
@@ -24,8 +23,7 @@ pub struct WorldGeometryPass {
     culling_pipeline: ComputePipeline,
     draw_pipeline: RenderPipeline,
 
-    chunk_vertex_buffer: wgpu::Buffer,
-    chunk_index_buffer: wgpu::Buffer,
+    quad_indices: GpuBuffer<[u16; 6]>,
 
     culling_params: GpuBuffer<CullingParams>,
     input_chunk_ids: GpuBufferArray<u32>,
@@ -57,6 +55,13 @@ impl WorldGeometryPass {
                     "Chunks buffer",
                     wgpu::BindingResource::Buffer(
                         buffers.chunks.buffer().as_entire_buffer_binding(),
+                    ),
+                )
+                .storage_r(
+                    1,
+                    "Chunk face data buffer",
+                    wgpu::BindingResource::Buffer(
+                        buffers.faces.buffer().as_entire_buffer_binding(),
                     ),
                 )
                 .build(device);
@@ -133,6 +138,14 @@ impl WorldGeometryPass {
             &textures_bind_group_layout,
         );
 
+        let quad_indices = GpuBuffer::from_data(
+            device,
+            queue,
+            "Quad indices buffer",
+            wgpu::BufferUsages::INDEX,
+            &[0, 3, 1, 3, 2, 1],
+        );
+
         Self {
             culling_pipeline,
             draw_pipeline,
@@ -141,8 +154,7 @@ impl WorldGeometryPass {
             culling_bind_group,
             textures_bind_group,
 
-            chunk_vertex_buffer: buffers.vertices.buffer().clone(),
-            chunk_index_buffer: buffers.indices.buffer().clone(),
+            quad_indices,
 
             culling_params: GpuBuffer::from_buffer(queue, culling_params_buffer),
             input_chunk_ids: GpuBufferArray::from_buffer(queue, input_chunk_ids_buffer),
@@ -208,8 +220,10 @@ impl WorldGeometryPass {
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
         render_pass.set_bind_group(1, &self.chunks_bind_group, &[]);
         render_pass.set_bind_group(2, &self.textures_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.chunk_vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.chunk_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        render_pass.set_index_buffer(
+            self.quad_indices.inner().slice(..),
+            wgpu::IndexFormat::Uint16,
+        );
 
         render_pass.multi_draw_indexed_indirect(self.draw_commands.inner(), 0, max_draw_count);
     }
@@ -278,7 +292,7 @@ fn create_draw_pipeline(
         vertex: VertexState {
             module: &module,
             entry_point: Some("vs_main"),
-            buffers: &[ChunkVertex::VBL],
+            buffers: &[],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {

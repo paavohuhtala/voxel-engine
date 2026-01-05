@@ -1,27 +1,27 @@
 use std::{collections::HashMap, sync::Arc};
 
+use anyhow::Context;
 use bytemuck::{Pod, Zeroable};
 use crossbeam_channel::Receiver;
+use glam::Vec3;
 use ordered_float::OrderedFloat;
 use rayon::prelude::*;
 
 use engine::{
-    assets::blocks::BlockDatabase,
+    assets::blocks::{BlockDatabase, BlockDatabaseSlim},
     camera::Camera,
     game_loop::GameLoopTime,
-    math::{
-        aabb::{AABB8, PackedAABB},
-        frustum::Frustum,
-    },
-    voxels::coord::ChunkPos,
+    math::{aabb::PackedAABB, frustum::Frustum},
+    voxels::{chunk::CHUNK_SIZE, coord::ChunkPos},
     world::World,
 };
 use wgpu::CommandEncoder;
 
 use crate::rendering::{
     buffer_update_batcher::BufferUpdateBatcher,
-    chunk_mesh::{ChunkMesh, ChunkMeshData, ChunkVertex, GpuChunk},
-    limits::{INDEX_BUFFER_CAPACITY, MAX_GPU_CHUNKS, VERTEX_BUFFER_CAPACITY},
+    chunk_mesh::PackedVoxelFace,
+    chunk_mesh::{ChunkMesh, ChunkMeshData, GpuChunk},
+    limits::{FACE_BUFFER_SIZE_BYTES, MAX_GPU_CHUNKS},
     memory::{
         gpu_heap::GpuHeap,
         gpu_pool::{GpuPool, GpuPoolHandle},
@@ -37,10 +37,15 @@ use crate::rendering::{
 };
 
 pub struct RenderChunk {
-    aabb: AABB8,
-    _pos: ChunkPos,
+    pos: ChunkPos,
     _mesh: Option<ChunkMesh>,
     gpu_handle: GpuPoolHandle<GpuChunk>,
+}
+
+impl RenderChunk {
+    pub fn center(&self) -> Vec3 {
+        self.pos.origin().0.as_vec3() + Vec3::splat(CHUNK_SIZE as f32 * 0.5)
+    }
 }
 
 #[repr(C)]
@@ -52,8 +57,7 @@ pub struct CullingParams {
 }
 
 pub struct WorldBuffers {
-    pub vertices: Arc<GpuHeap<ChunkVertex>>,
-    pub indices: Arc<GpuHeap<u16>>,
+    pub faces: Arc<GpuHeap<PackedVoxelFace>>,
     pub chunks: Arc<GpuPool<GpuChunk>>,
     pub camera: GpuBuffer<CameraUniform>,
 }
@@ -62,38 +66,27 @@ impl WorldBuffers {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        vertex_capacity_bytes: u64,
-        index_capacity_bytes: u64,
         camera: GpuBuffer<CameraUniform>,
     ) -> Self {
-        let vertex_buffer = GpuHeap::new(
+        let faces = GpuHeap::new(
             device,
-            queue.clone(),
-            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            vertex_capacity_bytes,
-            align_of::<ChunkVertex>() as u64,
-            "World vertex buffer",
-        );
-        let index_buffer = GpuHeap::new(
-            device,
-            queue.clone(),
-            wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            index_capacity_bytes,
-            align_of::<u16>() as u64,
-            "World index buffer",
+            queue,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            FACE_BUFFER_SIZE_BYTES,
+            4,
+            "World face buffer",
         );
 
         let chunk_buffer = GpuPool::new(
             device,
-            queue.clone(),
+            queue,
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             MAX_GPU_CHUNKS,
             "World chunk buffer",
         );
 
         Self {
-            vertices: Arc::new(vertex_buffer),
-            indices: Arc::new(index_buffer),
+            faces: Arc::new(faces),
             chunks: Arc::new(chunk_buffer),
             camera,
         }
@@ -104,35 +97,24 @@ impl WorldBuffers {
         batcher: &mut BufferUpdateBatcher,
         mesh_data: &ChunkMeshData,
     ) -> ChunkMesh {
-        let vertex_allocation = self
-            .vertices
+        let face_allocation = self
+            .faces
             .clone()
-            .allocate(mesh_data.vertices.len() as u64)
-            .expect("Failed to allocate vertex buffer for chunk mesh");
+            .allocate(mesh_data.faces.len() as u64)
+            .with_context(|| {
+                format!(
+                    "Failed to allocate {} faces for chunk mesh",
+                    mesh_data.faces.len()
+                )
+            })
+            .expect("Failed to allocate face buffer for chunk mesh");
 
-        let index_allocation = self
-            .indices
-            .clone()
-            .allocate(mesh_data.indices.len() as u64)
-            .expect("Failed to allocate index buffer for chunk mesh");
-
-        log::debug!(
-            "Allocated chunk mesh: {} vertices, {} indices. Vertex offset: {}, Index offset: {}",
-            mesh_data.vertices.len(),
-            mesh_data.indices.len(),
-            vertex_allocation.byte_offset(),
-            index_allocation.byte_offset()
-        );
-
-        vertex_allocation.wite_data_batched(batcher, &mesh_data.vertices);
-        index_allocation.wite_data_batched(batcher, &mesh_data.indices);
+        face_allocation.write_data_batched(batcher, &mesh_data.faces);
 
         ChunkMesh {
             position: mesh_data.position,
             aabb: mesh_data.aabb,
-            vertices_handle: vertex_allocation,
-            indices_handle: index_allocation,
-            index_count: mesh_data.indices.len() as u32,
+            faces_handle: face_allocation,
         }
     }
 }
@@ -166,17 +148,14 @@ impl WorldRenderer {
     ) -> Self {
         let render_camera = RenderCamera::new(device, queue, size);
 
-        let buffers = WorldBuffers::new(
-            device,
-            queue,
-            VERTEX_BUFFER_CAPACITY,
-            INDEX_BUFFER_CAPACITY,
-            render_camera.uniform_buffer.clone(),
-        );
+        let buffers = WorldBuffers::new(device, queue, render_camera.uniform_buffer.clone());
 
         let sky_pass = SkyPass::new(device, &render_camera.uniform_buffer);
 
-        let texture_manager = TextureManager::new(device, queue);
+        let mut texture_manager = TextureManager::new(device, queue);
+        texture_manager
+            .load_all_textures(&block_database)
+            .expect("Failed to load block materials");
 
         let world_geo_pass = WorldGeometryPass::new(device, queue, &buffers, &texture_manager);
 
@@ -208,7 +187,9 @@ impl WorldRenderer {
             size,
         );
 
-        let (mesh_generator, mesh_receiver) = ChunkMeshGenerator::new(block_database.clone());
+        // TODO: Let's hope the block database never changes
+        let block_database = BlockDatabaseSlim::from_block_database(&block_database);
+        let (mesh_generator, mesh_receiver) = ChunkMeshGenerator::new(Arc::new(block_database));
         let mesh_generator = Arc::new(mesh_generator);
 
         let batcher = BufferUpdateBatcher::new(device.clone(), 64 * 1024 * 1024);
@@ -246,16 +227,15 @@ impl WorldRenderer {
             batcher,
             &GpuChunk {
                 position: chunk_mesh.position.0.extend(0),
-                mesh_data_index_offset: chunk_mesh.indices_handle.index() as u32,
-                mesh_data_index_count: chunk_mesh.indices_handle.count() as u32,
-                mesh_data_vertex_offset: chunk_mesh.vertices_handle.index() as i32,
+                face_count: mesh_data.faces.len() as u32,
+                face_data_offset: chunk_mesh.faces_handle.index() as u32,
                 aabb,
+                _padding: 0,
             },
         );
 
         RenderChunk {
-            _pos: pos,
-            aabb: mesh_data.aabb,
+            pos,
             _mesh: Some(chunk_mesh),
             gpu_handle: gpu_chunk,
         }
@@ -308,16 +288,6 @@ impl WorldRenderer {
                 self.render_chunks.insert(pos, render_chunk);
             }
         }
-
-        let vertex_buffer_stats = self.buffers.vertices.get_stats();
-        let index_buffer_stats = self.buffers.indices.get_stats();
-
-        log::info!(
-            "Created {} render chunks. Vertex buffer stats: {:?}, Index buffer stats: {:?}",
-            self.render_chunks.len(),
-            vertex_buffer_stats,
-            index_buffer_stats
-        );
     }
 
     pub fn resize(&mut self, size: Resolution) {
@@ -347,8 +317,8 @@ impl WorldRenderer {
             let mut render_chunks: Vec<&RenderChunk> = self.render_chunks.values().collect();
 
             // Sort by distance to camera
-            render_chunks.par_sort_by_cached_key(|chunk| {
-                let chunk_center = chunk.aabb.center();
+            render_chunks.sort_unstable_by_key(|chunk| {
+                let chunk_center = chunk.center();
                 let distance_sq = eye.distance_squared(chunk_center);
                 OrderedFloat(distance_sq)
             });
@@ -388,9 +358,21 @@ impl WorldRenderer {
         self.post_fx.render(encoder, view);
     }
 
-    pub fn update_camera(&mut self, camera: &Camera, immediate: bool) {
-        self.camera.update_camera(camera, immediate);
+    /// Sets both previous and current camera to the same value (no interpolation).
+    /// Use when teleporting or initializing.
+    pub fn set_camera_immediate(&mut self, camera: &Camera) {
+        self.camera.set_camera_immediate(camera);
+        self.update_chunk_tracking(camera);
+    }
 
+    /// Updates the camera for this frame. Call once per frame after all game updates.
+    /// Internally manages interpolation between previous and current states.
+    pub fn set_camera(&mut self, camera: &Camera) {
+        self.camera.set_camera(camera);
+        self.update_chunk_tracking(camera);
+    }
+
+    fn update_chunk_tracking(&mut self, camera: &Camera) {
         let current_chunk = camera.get_current_chunk();
         if self.previous_chunk != Some(current_chunk) {
             self.chunks_changed = true;

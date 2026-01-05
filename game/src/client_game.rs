@@ -37,7 +37,8 @@ impl Game for ClientGame {
 
     #[profiling::function]
     fn update(&mut self, time: &GameLoopTime) -> anyhow::Result<()> {
-        self.ctx.physics.update(time.delta_time_s as f32);
+        // TODO: Re-enable physics when we start using it for something
+        // self.ctx.physics.update(time.delta_time_s as f32);
         self.ctx.player.update(time);
 
         self.ctx
@@ -76,16 +77,16 @@ impl Game for ClientGame {
                 .remove_chunk(pos);
         }
 
-        self.renderer
-            .as_mut()
-            .unwrap()
-            .update_camera(&self.ctx.player.camera, false);
         self.renderer.as_mut().unwrap().update(time);
         Ok(())
     }
 
     #[profiling::function]
     fn render(&mut self, time: &GameLoopTime) -> anyhow::Result<()> {
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_camera(&self.ctx.player.camera);
+        }
+
         self.draw_egui();
 
         let Some(renderer) = &mut self.renderer else {
@@ -153,17 +154,8 @@ impl ClientGame {
         let egui_renderer = EguiInstance::new(window.clone(), &renderer.device, &renderer.queue);
         self.egui = Some(egui_renderer);
 
-        // Copy initial camera state
-        renderer.update_camera(&self.ctx.player.camera, true);
+        renderer.set_camera_immediate(&self.ctx.player.camera);
 
-        // Load textures and create chunks (again)
-        let block_database = self.ctx.block_database.clone();
-
-        renderer
-            .world_renderer
-            .texture_manager
-            .load_all_textures(block_database.iter_blocks())
-            .expect("Failed to load block materials");
         renderer.world_renderer.create_all_chunks(&self.ctx.world);
 
         self.renderer = Some(renderer);
@@ -206,6 +198,13 @@ impl ClientGame {
                     .world_renderer
                     .camera
                     .toggle_ao();
+            }
+            (KeyCode::F3, ElementState::Pressed) => {
+                self.ctx.player.should_move_camera = !self.ctx.player.should_move_camera;
+            }
+            (KeyCode::F4, ElementState::Pressed) => {
+                let world_renderer = &mut self.renderer.as_mut().unwrap().world_renderer;
+                world_renderer.camera.toggle_face_colors();
             }
             _ => {}
         }

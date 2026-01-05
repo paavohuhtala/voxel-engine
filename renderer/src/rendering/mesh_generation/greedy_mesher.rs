@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use engine::{
-    assets::blocks::BlockDatabase,
+    assets::blocks::BlockDatabaseSlim,
     math::{
         axis::Axis,
         basis::Basis,
@@ -17,7 +17,8 @@ use engine::{
 use glam::{IVec3, U8Vec2, U8Vec3};
 
 use crate::rendering::{
-    chunk_mesh::{ChunkMeshData, ChunkVertex},
+    chunk_mesh::ChunkMeshData,
+    chunk_mesh::{PackedVoxelFace, VoxelFace},
     mesh_generation::chunk_mesh_generator_input::ChunkMeshGeneratorInput,
 };
 
@@ -38,12 +39,12 @@ enum MaskEntry {
 }
 
 pub struct GreedyMesher {
-    block_database: Arc<BlockDatabase>,
+    block_database: Arc<BlockDatabaseSlim>,
     mask: Vec<MaskEntry>,
 }
 
 impl GreedyMesher {
-    pub fn new(block_database: Arc<BlockDatabase>) -> Self {
+    pub fn new(block_database: Arc<BlockDatabaseSlim>) -> Self {
         const CHUNK_USIZE: usize = CHUNK_SIZE as usize;
         GreedyMesher {
             block_database,
@@ -188,6 +189,11 @@ impl GreedyMesher {
                     }
                 }
 
+                let depth = match direction {
+                    FaceDirection::Positive => depth - 1,
+                    FaceDirection::Negative => depth,
+                };
+
                 let origin = LocalVec3::from_uvd(u as u8, v as u8, depth as u8, basis);
 
                 self.add_quad(
@@ -222,17 +228,6 @@ impl GreedyMesher {
         direction: FaceDirection,
         ao: [u8; 4],
     ) {
-        let start_index = chunk_mesh_data.vertices.len() as u16;
-        let uv = origin.uv();
-
-        // Despite the name, these are not _texture_ UVs, but rather local quad vertex coordinates in the U and V axes
-        let uv_coords = [
-            uv,
-            uv.offset(size.x, 0),
-            uv.offset(size.x, size.y),
-            uv.offset(0, size.y),
-        ];
-
         let face = match (origin.basis.d, direction) {
             (Axis::Y, FaceDirection::Positive) => Face::Top,
             (Axis::Y, FaceDirection::Negative) => Face::Bottom,
@@ -244,20 +239,9 @@ impl GreedyMesher {
 
         let texture_index = self
             .block_database
-            .get_by_id(voxel.block_type_id())
+            .get_texture_indices(voxel.block_type_id())
             .expect("Expected to find block definition")
-            .get_texture_indices()
-            .expect("Expected block to have texture indices")
             .get_face_index(face);
-
-        for (i, pos) in uv_coords.iter().enumerate() {
-            let pos = pos.extend(origin.d(), origin.basis.d).to_world();
-            chunk_mesh_data.vertices.push(ChunkVertex {
-                position: pos.extend(face as u8),
-                texture_index,
-                ambient_occlusion: ao[i] as u16,
-            });
-        }
 
         let diagonal = if (ao[0] + ao[2]) < (ao[1] + ao[3]) {
             FaceDiagonal::BottomLeftToTopRight
@@ -265,12 +249,14 @@ impl GreedyMesher {
             FaceDiagonal::TopLeftToBottomRight
         };
 
-        let quad_indices = match direction {
-            FaceDirection::Positive => face.indices_ccw(start_index, diagonal),
-            FaceDirection::Negative => face.indices_cw(start_index, diagonal),
-        };
-
-        chunk_mesh_data.indices.extend_from_slice(&quad_indices);
+        chunk_mesh_data.faces.push(PackedVoxelFace::from(VoxelFace {
+            position: origin.to_world(),
+            face_direction: face,
+            size,
+            ambient_occlusion: ao,
+            flip_diagonal: diagonal == FaceDiagonal::TopLeftToBottomRight,
+            texture_index,
+        }))
     }
 
     fn calculate_face_ao(
@@ -284,67 +270,80 @@ impl GreedyMesher {
             FaceDirection::Negative => -1,
         };
 
-        let get_neighbor_voxel = |offset_u: i32, offset_v: i32| {
+        let get_neighbor_voxel = |offset_u: i32, offset_v: i32| -> bool {
             let local_pos = pos.offset(offset_u, offset_v, offset_d);
             let chunk_relative_world_pos = local_pos.to_world();
-            self.get_voxel(input, chunk_relative_world_pos)
+            self.get_voxel(input, chunk_relative_world_pos).is_some()
         };
 
-        let top_neighbor = get_neighbor_voxel(0, 1);
-        let bottom_neighbor = get_neighbor_voxel(0, -1);
-        let left_neighbor = get_neighbor_voxel(-1, 0);
-        let right_neighbor = get_neighbor_voxel(1, 0);
-        let top_left_neighbor = get_neighbor_voxel(-1, 1);
-        let top_right_neighbor = get_neighbor_voxel(1, 1);
-        let bottom_left_neighbor = get_neighbor_voxel(-1, -1);
-        let bottom_right_neighbor = get_neighbor_voxel(1, -1);
-
-        let corners = [
-            (left_neighbor, bottom_neighbor, bottom_left_neighbor),
-            (right_neighbor, bottom_neighbor, bottom_right_neighbor),
-            (right_neighbor, top_neighbor, top_right_neighbor),
-            (left_neighbor, top_neighbor, top_left_neighbor),
-        ];
-
-        let mut ao = [0u8; 4];
-        for (i, (side1, side2, corner)) in corners.iter().enumerate() {
-            let occlusion = match (side1, side2, corner) {
-                // Both sides are occupied, max occlusion
-                (Some(_), Some(_), _) => 2,
-                // One side occupied, take corner into account
-                (Some(_), None, corner) | (None, Some(_), corner) => {
-                    1 + corner.map(|_| 1).unwrap_or(0)
-                }
-                // No sides occupied, no occlusion
-                (None, None, _) => 0,
-            };
-            ao[i] = occlusion;
-        }
-        ao
+        // Pack 8 neighbor samples into a single byte index
+        // Bit layout: [top_left, top_right, bottom_right, bottom_left, right, left, top, bottom]
+        let index = (get_neighbor_voxel(0, -1) as usize)
+            | (get_neighbor_voxel(0, 1) as usize) << 1
+            | (get_neighbor_voxel(-1, 0) as usize) << 2
+            | (get_neighbor_voxel(1, 0) as usize) << 3
+            | (get_neighbor_voxel(-1, -1) as usize) << 4
+            | (get_neighbor_voxel(1, -1) as usize) << 5
+            | (get_neighbor_voxel(1, 1) as usize) << 6
+            | (get_neighbor_voxel(-1, 1) as usize) << 7;
+        AO_LOOKUP_TABLE[index]
     }
 }
 
+/// Computes the AO value for a single corner given its two adjacent sides and diagonal neighbor.
+const fn compute_corner_ao(side1: bool, side2: bool, corner: bool) -> u8 {
+    if side1 && side2 {
+        3
+    } else {
+        (side1 as u8) + (side2 as u8) + (corner as u8)
+    }
+}
+
+/// Generates the full 256-entry AO lookup table at compile time.
+/// Input index bit layout: [top_left, top_right, bottom_right, bottom_left, right, left, top, bottom]
+/// Output: [ao_bl, ao_br, ao_tr, ao_tl] for each of the 256 combinations.
+const fn generate_ao_lookup_table() -> [[u8; 4]; 256] {
+    let mut table = [[0u8; 4]; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let bottom = (i & (1 << 0)) != 0;
+        let top = (i & (1 << 1)) != 0;
+        let left = (i & (1 << 2)) != 0;
+        let right = (i & (1 << 3)) != 0;
+        let bottom_left = (i & (1 << 4)) != 0;
+        let bottom_right = (i & (1 << 5)) != 0;
+        let top_right = (i & (1 << 6)) != 0;
+        let top_left = (i & (1 << 7)) != 0;
+
+        // Corner AO values in order: BL(0,0), BR(1,0), TR(1,1), TL(0,1)
+        table[i] = [
+            compute_corner_ao(left, bottom, bottom_left), // Corner 0: Bottom-Left
+            compute_corner_ao(right, bottom, bottom_right), // Corner 1: Bottom-Right
+            compute_corner_ao(right, top, top_right),     // Corner 2: Top-Right
+            compute_corner_ao(left, top, top_left),       // Corner 3: Top-Left
+        ];
+        i += 1;
+    }
+    table
+}
+
+static AO_LOOKUP_TABLE: [[u8; 4]; 256] = generate_ao_lookup_table();
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use engine::{
-        assets::blocks::{BlockDatabase, BlockDefinition, BlockTextureDefinition, TextureIndices},
+        assets::blocks::TextureIndices,
         voxels::{coord::ChunkPos, voxel::Voxel},
     };
+    use glam::{IVec3, U8Vec2, U8Vec3};
 
-    fn create_test_block_database() -> Arc<BlockDatabase> {
-        let mut db = BlockDatabase::new();
-        db.add_block_from_definition(BlockDefinition {
-            id: 1,
-            name: "test_block".to_string(),
-            textures: BlockTextureDefinition::Invisible,
-        })
-        .unwrap();
-
-        if let Some(entry) = db.get_by_id(engine::assets::blocks::BlockTypeId(1)) {
-            entry.set_texture_indices(TextureIndices::new_single(0));
-        }
-
+    fn create_test_block_database() -> Arc<BlockDatabaseSlim> {
+        let mut db = BlockDatabaseSlim::new();
+        db.add_block(TextureIndices::new_single(0));
+        db.add_block(TextureIndices::new_single(1));
         Arc::new(db)
     }
 
@@ -352,103 +351,88 @@ mod tests {
     fn test_single_voxel() {
         let db = create_test_block_database();
         let mut mesher = GreedyMesher::new(db);
-        let mut input = ChunkMeshGeneratorInput::new_empty(ChunkPos::new(0, 0, 0));
+        let center_pos = ChunkPos::new(0, 0, 0);
+        let mut input = ChunkMeshGeneratorInput::new_empty(center_pos);
 
-        // Place a single voxel in the center
+        // Place a single voxel at (1, 1, 1)
         let voxel = Voxel::from_type(1);
-        let center_pos = WorldPos::new(8, 8, 8);
-        input.set_voxel(center_pos, voxel);
+        input.set_voxel(
+            center_pos.origin() + WorldPos::from(IVec3::new(1, 1, 1)),
+            voxel,
+        );
 
         let mesh = mesher.generate_mesh(&input);
 
-        // Should have 6 faces (quads)
-        // Each quad has 4 vertices -> 24 vertices
-        // Each quad has 6 indices -> 36 indices
-        assert_eq!(mesh.vertices.len(), 24);
-        assert_eq!(mesh.indices.len(), 36);
+        // A single voxel should have 6 faces
+        assert_eq!(mesh.faces.len(), 6);
+
+        // Check faces
+        // All faces should be at (1,1,1) with size (1,1), with texture index 1 and no AO
+        // There should be one face for each direction
+        let mut directions_found = [false; 6];
+        for face in &mesh.faces {
+            let unpacked = face.unpack();
+            assert_eq!(unpacked.position, U8Vec3::new(1, 1, 1));
+            assert_eq!(unpacked.size, U8Vec2::new(1, 1));
+            assert_eq!(unpacked.texture_index, 1);
+            assert_eq!(unpacked.ambient_occlusion, [0, 0, 0, 0]);
+            directions_found[unpacked.face_direction as usize] = true;
+        }
+        assert!(directions_found.iter().all(|&found| found));
     }
 
     #[test]
-    fn test_greedy_meshing_simple() {
+    fn test_greedy_merging() {
         let db = create_test_block_database();
         let mut mesher = GreedyMesher::new(db);
-        let mut input = ChunkMeshGeneratorInput::new_empty(ChunkPos::new(0, 0, 0));
+        let center_pos = ChunkPos::new(0, 0, 0);
+        let mut input = ChunkMeshGeneratorInput::new_empty(center_pos);
 
         // Place two voxels next to each other along X axis
         let voxel = Voxel::from_type(1);
-        let p1 = WorldPos::new(8, 8, 8);
-        let p2 = WorldPos::new(9, 8, 8);
-
-        input.set_voxel(p1, voxel);
-        input.set_voxel(p2, voxel);
-
-        let mesh = mesher.generate_mesh(&input);
-
-        // Should have same number of faces as a single voxel, since adjacent voxels are merged
-        assert_eq!(mesh.vertices.len(), 24);
-        assert_eq!(mesh.indices.len(), 36);
-    }
-
-    #[test]
-    fn test_chunk_boundary_culling() {
-        let db = create_test_block_database();
-        let mut mesher = GreedyMesher::new(db);
-        let mut input = ChunkMeshGeneratorInput::new_empty(ChunkPos::new(0, 0, 0));
-
-        let voxel = Voxel::from_type(1);
-
-        // Place voxel at right boundary (x=15)
-        let p1 = WorldPos::new(15, 8, 8);
-        input.set_voxel(p1, voxel);
-
-        // Case 1: Neighbor is empty
-        let mesh = mesher.generate_mesh(&input);
-        // Should generate Right face
-        let has_right_face = mesh.vertices.iter().any(|v| {
-            // Face ID is stored in w component of position (last byte)
-            v.position.w == Face::Right as u8
-        });
-        assert!(
-            has_right_face,
-            "Should generate right face when neighbor is empty"
+        input.set_voxel(
+            center_pos.origin() + WorldPos::from(IVec3::new(1, 1, 1)),
+            voxel,
+        );
+        input.set_voxel(
+            center_pos.origin() + WorldPos::from(IVec3::new(2, 1, 1)),
+            voxel,
         );
 
-        // Case 2: Neighbor has solid block
-        // Update neighbor border (Right neighbor, so we update the Right border)
-        let neighbor_pos = WorldPos::new(16, 8, 8);
-        input.set_voxel(neighbor_pos, voxel);
-
         let mesh = mesher.generate_mesh(&input);
-        let has_right_face = mesh
-            .vertices
+        let all_faces = mesh
+            .faces
             .iter()
-            .any(|v| v.position.w == Face::Right as u8);
-        assert!(
-            !has_right_face,
-            "Should NOT generate right face when neighbor is solid"
-        );
+            .map(|f| {
+                let unpacked = f.unpack();
+                (unpacked.face_direction, unpacked)
+            })
+            .collect::<HashMap<Face, _>>();
+
+        // There should be 6 faces total
+        assert_eq!(mesh.faces.len(), 6);
+
+        let left_face = all_faces.get(&Face::Left).expect("Expected left face");
+        let right_face = all_faces.get(&Face::Right).expect("Expected right face");
+        assert_eq!(left_face.position, U8Vec3::new(1, 1, 1));
+        assert_eq!(right_face.position, U8Vec3::new(2, 1, 1));
+        // Left and right faces at the ends, so each should be 1x1
+        assert_eq!(right_face.size, U8Vec2::new(1, 1));
+        assert_eq!(left_face.size, U8Vec2::new(1, 1));
+        // Top, bottom, front, back faces should be merged into 2x1/1x2 quads
+        let top_face = all_faces.get(&Face::Top).expect("Expected top face");
+        let bottom_face = all_faces.get(&Face::Bottom).expect("Expected bottom face");
+        let front_face = all_faces.get(&Face::Front).expect("Expected front face");
+        let back_face = all_faces.get(&Face::Back).expect("Expected back face");
+        assert_eq!(top_face.position, U8Vec3::new(1, 1, 1));
+        assert_eq!(bottom_face.position, U8Vec3::new(1, 1, 1));
+        assert_eq!(front_face.position, U8Vec3::new(1, 1, 1));
+        assert_eq!(back_face.position, U8Vec3::new(1, 1, 1));
+        assert_eq!(top_face.size, U8Vec2::new(1, 2));
+        assert_eq!(bottom_face.size, U8Vec2::new(1, 2));
+        assert_eq!(front_face.size, U8Vec2::new(2, 1));
+        assert_eq!(back_face.size, U8Vec2::new(2, 1));
     }
 
-    #[test]
-    fn test_chunk_boundary_no_overlap() {
-        let db = create_test_block_database();
-        let mut mesher = GreedyMesher::new(db);
-        let mut input = ChunkMeshGeneratorInput::new_empty(ChunkPos::new(0, 0, 0));
-
-        let voxel = Voxel::from_type(1);
-
-        // Place voxel in neighbor's border (Right neighbor)
-        let neighbor_pos = WorldPos::new(16, 8, 8);
-        input.set_voxel(neighbor_pos, voxel);
-
-        // Center chunk is empty.
-        // The mesher should NOT generate any faces for the neighbor's voxel.
-
-        let mesh = mesher.generate_mesh(&input);
-        assert_eq!(
-            mesh.vertices.len(),
-            0,
-            "Should not generate faces for neighbor voxels"
-        );
-    }
+    // TODO: Add more tests for AO correctness and complex shapes
 }

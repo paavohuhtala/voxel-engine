@@ -34,7 +34,10 @@ pub struct ChunkLoader {
 }
 
 impl ChunkLoader {
-    pub fn new(world_generator: WorldGenerator, initial_loaded_chunks: Vec<ChunkPos>) -> Self {
+    pub fn new(
+        world_generator: Box<dyn WorldGenerator>,
+        initial_loaded_chunks: Vec<ChunkPos>,
+    ) -> Self {
         let (chunk_event_sender, chunk_event_receiver) = crossbeam_channel::unbounded();
 
         let current_chunk = Arc::new(RwLock::new(ChunkPos(IVec3::ZERO)));
@@ -86,7 +89,7 @@ impl ChunkLoader {
 }
 
 struct ChunkLoaderWorker {
-    world_generator: Arc<WorldGenerator>,
+    world_generator: Arc<dyn WorldGenerator>,
     current_chunk: Arc<RwLock<ChunkPos>>,
     command_sender: Sender<ChunkLoaderCommand>,
     command_receiver: Receiver<ChunkLoaderCommand>,
@@ -98,11 +101,11 @@ struct ChunkLoaderWorker {
 
 impl ChunkLoaderWorker {
     // TODO: Make configurable
-    const VIEW_DISTANCE: i32 = 16;
+    const VIEW_DISTANCE: i32 = 12;
     const VIEW_DISTANCE_Y: i32 = 6;
 
     pub fn new(
-        world_generator: WorldGenerator,
+        world_generator: Box<dyn WorldGenerator>,
         chunk_event_sender: Sender<ChunkLoaderEvent>,
         initial_loaded_chunks: Vec<ChunkPos>,
         current_chunk: Arc<RwLock<ChunkPos>>,
@@ -123,7 +126,7 @@ impl ChunkLoaderWorker {
 
         (
             ChunkLoaderWorker {
-                world_generator: Arc::new(world_generator),
+                world_generator: Arc::from(world_generator),
                 current_chunk,
                 command_sender: command_sender.clone(),
                 command_receiver,

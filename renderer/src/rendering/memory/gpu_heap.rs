@@ -41,6 +41,10 @@ impl<T: Pod> GpuHeapHandle<T> {
         self.allocator.buffer()
     }
 
+    pub fn alignment(&self) -> u64 {
+        self.allocator.alignment()
+    }
+
     pub fn write_data(&self, data: &[T]) {
         let byte_data: &[u8] = bytemuck::cast_slice(data);
         if byte_data.is_empty() {
@@ -49,7 +53,7 @@ impl<T: Pod> GpuHeapHandle<T> {
         self.allocator.write_data(self, bytemuck::cast_slice(data));
     }
 
-    pub fn wite_data_batched(&self, batcher: &mut BufferUpdateBatcher, data: &[T]) {
+    pub fn write_data_batched(&self, batcher: &mut BufferUpdateBatcher, data: &[T]) {
         let byte_data: &[u8] = bytemuck::cast_slice(data);
         if byte_data.is_empty() {
             return;
@@ -74,6 +78,7 @@ pub struct GpuHeap<T> {
     buffer: wgpu::Buffer,
     queue: wgpu::Queue,
     allocator: RwLock<BuddyAllocator>,
+    alignment: u64,
     #[allow(unused)]
     label: String,
     _marker: PhantomData<T>,
@@ -82,7 +87,7 @@ pub struct GpuHeap<T> {
 impl<T> GpuHeap<T> {
     pub fn new(
         device: &wgpu::Device,
-        queue: wgpu::Queue,
+        queue: &wgpu::Queue,
         usage: wgpu::BufferUsages,
         size_bytes: u64,
         alignment_bytes: u64,
@@ -106,11 +111,16 @@ impl<T> GpuHeap<T> {
 
         GpuHeap {
             buffer,
-            queue,
+            queue: queue.clone(),
             allocator: RwLock::new(allocator),
+            alignment: alignment_bytes,
             label,
             _marker: PhantomData,
         }
+    }
+
+    pub fn alignment(&self) -> u64 {
+        self.alignment
     }
 
     pub fn allocate(self: Arc<Self>, count: u64) -> Option<GpuHeapHandle<T>> {

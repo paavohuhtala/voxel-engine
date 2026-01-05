@@ -8,9 +8,7 @@ use crate::{
     },
     gameplay::physics::world_collider::PhysicsWorld,
     player::Player,
-    voxels::coord::WorldPos,
     world::World,
-    worldgen::{draw_text, generate_noise_world},
 };
 
 pub mod assets;
@@ -35,20 +33,18 @@ pub struct EngineContext {
     pub player: Player,
 }
 
-pub fn init_engine() -> anyhow::Result<EngineContext> {
+// TODO: Engine should be able to init without a world
+pub fn init_engine(world: World) -> anyhow::Result<EngineContext> {
     let config = EngineConfig::create_manager()?;
 
-    let font =
-        load_font(PathBuf::from("assets/fonts").as_path(), "custom").expect("Failed to load font");
+    // TODO: This does nothing, this is just here to ensure the font loading system works
+    load_font(PathBuf::from("assets/fonts").as_path(), "custom").expect("Failed to load font");
 
     let mut block_database = BlockDatabase::new();
     block_database
         .load_all_blocks()
         .expect("Failed to load block definitions");
     let block_database = Arc::new(block_database);
-
-    let world = generate_noise_world(16);
-    draw_text(&world, WorldPos::new(0, 16, 0), &font, "Hello, world!");
 
     let physics = PhysicsWorld::new();
 

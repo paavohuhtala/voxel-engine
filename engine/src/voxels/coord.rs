@@ -4,7 +4,10 @@ use glam::{IVec3, U8Vec3, Vec3};
 
 use crate::{
     math::axis::Axis,
-    voxels::{chunk::CHUNK_SIZE, face::Face},
+    voxels::{
+        chunk::{CHUNK_SIZE, CHUNK_SIZE_LOG2},
+        face::Face,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -147,14 +150,21 @@ impl WorldPos {
 
     #[inline(always)]
     pub fn to_chunk_pos(&self) -> ChunkPos {
-        let converted_pos = self.0.div_euclid(IVec3::splat(CHUNK_SIZE as i32));
-        ChunkPos(converted_pos)
+        // For some reason glam's div_euclid doesn't get inlined properly here - so let's do it manually
+        let x = self.0.x >> CHUNK_SIZE_LOG2;
+        let y = self.0.y >> CHUNK_SIZE_LOG2;
+        let z = self.0.z >> CHUNK_SIZE_LOG2;
+        ChunkPos::new(x, y, z)
     }
 
     #[inline(always)]
     pub fn to_local_pos(&self) -> LocalPos {
-        let converted_pos = self.0.rem_euclid(IVec3::splat(CHUNK_SIZE as i32));
-        LocalPos(converted_pos.as_u8vec3())
+        // Same problem with inlining here
+        const MASK: i32 = (CHUNK_SIZE as i32) - 1;
+        let x = (self.0.x & MASK) as u8;
+        let y = (self.0.y & MASK) as u8;
+        let z = (self.0.z & MASK) as u8;
+        LocalPos::new(x, y, z)
     }
 
     #[inline(always)]

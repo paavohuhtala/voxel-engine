@@ -1,6 +1,6 @@
 use glam::{IVec3, U8Vec3};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum Face {
@@ -132,6 +132,23 @@ impl Face {
     }
 }
 
+impl TryFrom<u8> for Face {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Face::Top),
+            1 => Ok(Face::Bottom),
+            2 => Ok(Face::Left),
+            3 => Ok(Face::Right),
+            4 => Ok(Face::Front),
+            5 => Ok(Face::Back),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FaceDiagonal {
     BottomLeftToTopRight,
     TopLeftToBottomRight,

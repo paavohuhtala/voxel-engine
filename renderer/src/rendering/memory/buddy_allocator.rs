@@ -106,6 +106,19 @@ impl BuddyAllocator {
 
         // Split blocks until we reach the desired order
         let block = self.split_until_order(free_block_index, alloc_order);
+
+        let waste_bytes = block.size() - size;
+        let waste_percentage = (waste_bytes as f64 / block.size() as f64) * 100.0;
+
+        log::debug!(
+            "Requested allocation of {} bytes; allocated block at offset {} with size {} (waste: {} bytes, {:.2}%)",
+            size,
+            block.offset,
+            block.size(),
+            waste_bytes,
+            waste_percentage
+        );
+
         block.is_free = false;
         Some(block.offset)
     }

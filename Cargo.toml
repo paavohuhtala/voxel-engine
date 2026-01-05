@@ -8,6 +8,9 @@ opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
 
+[profile.release]
+lto = "thin"
+
 [profile.profiling]
 inherits = "release"
 debug = true

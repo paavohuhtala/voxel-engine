@@ -11,7 +11,10 @@ use winit::window::Window;
 
 use crate::{
     renderer_config::RendererConfig,
-    rendering::{resolution::Resolution, texture::DepthTexture, world_renderer::WorldRenderer},
+    rendering::{
+        limits::FACE_BUFFER_SIZE_BYTES, resolution::Resolution, texture::DepthTexture,
+        world_renderer::WorldRenderer,
+    },
 };
 
 pub struct Renderer {
@@ -61,6 +64,8 @@ impl Renderer {
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 required_limits: wgpu::Limits {
                     max_binding_array_elements_per_shader_stage: u16::MAX as u32,
+                    max_buffer_size: FACE_BUFFER_SIZE_BYTES,
+                    max_storage_buffer_binding_size: FACE_BUFFER_SIZE_BYTES as u32,
                     ..Default::default()
                 },
                 memory_hints: Default::default(),
@@ -139,8 +144,15 @@ impl Renderer {
         }
     }
 
-    pub fn update_camera(&mut self, camera: &Camera, immediate: bool) {
-        self.world_renderer.update_camera(camera, immediate);
+    /// Sets both previous and current camera to the same value (no interpolation).
+    /// Use when teleporting or initializing.
+    pub fn set_camera_immediate(&mut self, camera: &Camera) {
+        self.world_renderer.set_camera_immediate(camera);
+    }
+
+    /// Updates the camera for this frame. Call once per frame after all game updates.
+    pub fn set_camera(&mut self, camera: &Camera) {
+        self.world_renderer.set_camera(camera);
     }
 
     pub fn update(&mut self, time: &GameLoopTime) {

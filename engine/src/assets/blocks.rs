@@ -191,3 +191,48 @@ impl BlockDatabase {
         self.blocks.iter().find(|b| b.id == id)
     }
 }
+
+// Minimal version of block database for use in voxel meshing where only block ID -> texture index mapping is needed
+pub struct BlockDatabaseSlim {
+    blocks: Vec<TextureIndices>,
+}
+
+impl BlockDatabaseSlim {
+    pub fn new() -> Self {
+        BlockDatabaseSlim { blocks: Vec::new() }
+    }
+
+    /// This is only for testing purposes - in normal operation, BlockDatabaseSlim is always created from a full BlockDatabase
+    pub fn add_block(&mut self, indices: TextureIndices) -> BlockTypeId {
+        self.blocks.push(indices);
+        BlockTypeId((self.blocks.len() - 1) as u16)
+    }
+
+    pub fn from_block_database(db: &BlockDatabase) -> Self {
+        let blocks = db
+            .blocks
+            .iter()
+            .map(|b| {
+                b.get_texture_indices()
+                    .unwrap_or_else(|| TextureIndices::new_single(0))
+            })
+            .collect::<Vec<_>>();
+        BlockDatabaseSlim { blocks }
+    }
+
+    pub fn get_texture_indices(&self, id: BlockTypeId) -> Option<&TextureIndices> {
+        self.blocks.get(id.0 as usize)
+    }
+}
+
+impl Default for BlockDatabaseSlim {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<&BlockDatabase> for BlockDatabaseSlim {
+    fn from(db: &BlockDatabase) -> Self {
+        BlockDatabaseSlim::from_block_database(db)
+    }
+}

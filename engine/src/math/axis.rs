@@ -16,17 +16,21 @@ impl Axis {
         }
     }
 
+    /// Returns the axis corresponding to the U coordinate (Tangent) on a face perpendicular to this axis.
+    /// These are chosen so that tangent × bitangent points in the positive direction of the depth axis.
     pub const fn u_axis(self) -> Axis {
         match self {
-            Axis::X => Axis::Y,
+            Axis::X => Axis::Z,
             Axis::Y => Axis::Z,
             Axis::Z => Axis::X,
         }
     }
 
+    /// Returns the axis corresponding to the V coordinate (Bitangent) on a face perpendicular to this axis.
+    /// These are chosen so that tangent × bitangent points in the positive direction of the depth axis.
     pub const fn v_axis(self) -> Axis {
         match self {
-            Axis::X => Axis::Z,
+            Axis::X => Axis::Y,
             Axis::Y => Axis::X,
             Axis::Z => Axis::Y,
         }

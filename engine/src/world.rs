@@ -23,8 +23,8 @@ pub struct World {
 }
 
 impl World {
-    pub fn from_generator(generator: WorldGenerator) -> Self {
-        let chunk_loader = ChunkLoader::new(generator, Vec::new());
+    pub fn from_generator(generator: impl WorldGenerator) -> Self {
+        let chunk_loader = ChunkLoader::new(Box::new(generator), Vec::new());
         let chunk_loader_receiver = chunk_loader.receiver();
         World {
             chunk_loader,
@@ -35,10 +35,10 @@ impl World {
         }
     }
 
-    pub fn from_chunks(generator: WorldGenerator, chunks: Vec<(ChunkPos, Chunk)>) -> Self {
+    pub fn from_chunks(generator: impl WorldGenerator, chunks: Vec<(ChunkPos, Chunk)>) -> Self {
         let chunks = chunks.into_iter().collect::<DashMap<ChunkPos, Chunk>>();
         let initial_loaded_chunks = chunks.iter().map(|entry| *entry.key()).collect();
-        let chunk_loader = ChunkLoader::new(generator, initial_loaded_chunks);
+        let chunk_loader = ChunkLoader::new(Box::new(generator), initial_loaded_chunks);
         let chunk_loader_receiver = chunk_loader.receiver();
         World {
             chunk_loader,

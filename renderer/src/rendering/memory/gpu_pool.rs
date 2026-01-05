@@ -50,7 +50,7 @@ pub struct GpuPool<T> {
 impl<T> GpuPool<T> {
     pub fn new(
         device: &wgpu::Device,
-        queue: wgpu::Queue,
+        queue: &wgpu::Queue,
         usage: wgpu::BufferUsages,
         size_objects: u64,
         label: impl Into<String>,
@@ -67,7 +67,7 @@ impl<T> GpuPool<T> {
 
         GpuPool {
             buffer,
-            queue,
+            queue: queue.clone(),
             pool: RwLock::new(pool),
             _marker: PhantomData,
         }

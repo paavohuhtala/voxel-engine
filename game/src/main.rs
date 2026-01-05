@@ -1,4 +1,4 @@
-use engine::{config::config_manager::Config, init_engine};
+use engine::{config::config_manager::Config, init_engine, worldgen::generate_noise_world};
 use winit::event_loop::{ControlFlow, EventLoop};
 
 use crate::{application::Application, config::ClientConfig};
@@ -13,7 +13,8 @@ fn main() -> anyhow::Result<()> {
     pretty_env_logger::init_timed();
     log::info!("Starting game client...");
 
-    let context = init_engine()?;
+    let world = generate_noise_world(16);
+    let context = init_engine(world)?;
     let client_config = ClientConfig::create_manager()?;
     let mut app = Application::new(context, client_config);
     let event_loop: EventLoop<()> = EventLoop::with_user_event().build()?;

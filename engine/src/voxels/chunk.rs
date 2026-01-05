@@ -74,6 +74,9 @@ impl Palette {
 }
 
 pub const CHUNK_SIZE: u8 = 16;
+// For fast division
+pub const CHUNK_SIZE_LOG2: i32 = 4;
+
 pub const CHUNK_VOLUME: usize = (CHUNK_SIZE as usize).pow(3);
 
 pub enum Chunk {

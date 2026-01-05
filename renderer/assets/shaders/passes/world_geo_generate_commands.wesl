@@ -51,16 +51,22 @@ fn main(
     aabb.min += chunk_pos;
     aabb.max += chunk_pos;
 
-    var is_visible = is_inside_frustum(frustum, aabb);
+    var is_visible = intersects_frustum(frustum, aabb);
     if !is_visible {
         draw_commands[index] = DrawIndexedIndirect(0u, 0u, 0u, 0i, 0u);
     } else {
+        // Let's abuse base_vertex to smuggle chunk_id to the vertex shader!
+        // base_vertex is added to the index and passed to the vertex shader as vertex_index
+        // Since each face has 4 vertices, the indices range between 0 and 3. We only need the two lowest bits for the actual vertex index.
+        // The vertex shader undoes this packing to get the chunk id back.
+        let packed_chunk_id = bitcast<i32>(insertBits(0u, chunk_id, 2u, 30u));
+
         draw_commands[index] = DrawIndexedIndirect(
-            chunk.mesh_data_index_count,
-            1u,
-            chunk.mesh_data_index_offset,
-            chunk.mesh_data_vertex_offset,
-            chunk_id
+            6,
+            chunk.face_count,
+            0,
+            packed_chunk_id,
+            chunk.face_data_offset
         );
     }
 }
@@ -71,19 +77,19 @@ struct AABB {
 }
 
 fn unpack_aabb(packed: u32) -> AABB {
-    let min_x = f32((packed >> 0u) & 0xFu);
-    let min_y = f32((packed >> 4u) & 0xFu);
-    let min_z = f32((packed >> 8u) & 0xFu);
-    let max_x = f32((packed >> 12u) & 0xFu) + 1.0;
-    let max_y = f32((packed >> 16u) & 0xFu) + 1.0;
-    let max_z = f32((packed >> 20u) & 0xFu) + 1.0;
+    let min_x = f32(extractBits(packed, 0u, 4u));
+    let min_y = f32(extractBits(packed, 4u, 4u));
+    let min_z = f32(extractBits(packed, 8u, 4u));
+    let max_x = f32(extractBits(packed, 12u, 4u)) + 1.0;
+    let max_y = f32(extractBits(packed, 16u, 4u)) + 1.0;
+    let max_z = f32(extractBits(packed, 20u, 4u)) + 1.0;
     return AABB(
         vec3<f32>(min_x, min_y, min_z),
         vec3<f32>(max_x, max_y, max_z)
     );
 }
 
-fn is_inside_frustum(frustum: Frustum, aabb: AABB) -> bool {
+fn intersects_frustum(frustum: Frustum, aabb: AABB) -> bool {
     for (var i: u32 = 0u; i < 6u; i = i + 1u) {
         let plane = frustum.planes[i];
         let p_vertex = vec3<f32>(

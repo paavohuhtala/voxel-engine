@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, Sender};
 use engine::{
-    assets::blocks::BlockDatabase,
+    assets::blocks::BlockDatabaseSlim,
     voxels::{chunk::Chunk, coord::ChunkPos},
     world::World,
 };
@@ -25,15 +25,13 @@ pub enum ChunkMeshGeneratorEvent {
 }
 
 pub struct ChunkMeshGenerator {
-    block_database: Arc<BlockDatabase>,
-    //chunk_receiver: Receiver<ChunkLoaderEvent>,
+    block_database: Arc<BlockDatabaseSlim>,
     mesh_sender: Sender<ChunkMeshGeneratorEvent>,
 }
 
 impl ChunkMeshGenerator {
     pub fn new(
-        block_database: Arc<BlockDatabase>,
-        //chunk_receiver: Receiver<ChunkLoaderEvent>,
+        block_database: Arc<BlockDatabaseSlim>,
     ) -> (Self, Receiver<ChunkMeshGeneratorEvent>) {
         let (mesh_sender, mesh_receiver) = crossbeam_channel::unbounded();
         (
