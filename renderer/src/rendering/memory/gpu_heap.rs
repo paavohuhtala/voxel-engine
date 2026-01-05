@@ -5,44 +5,28 @@ use std::{
 };
 
 use bytemuck::Pod;
+use offset_allocator::{Allocation, Allocator};
 
-use crate::rendering::{
-    buffer_update_batcher::BufferUpdateBatcher,
-    memory::buddy_allocator::{AllocatorConfig, BuddyAllocator, BuddyAllocatorStats},
-};
+use crate::rendering::buffer_update_batcher::BufferUpdateBatcher;
 
 pub struct GpuHeapHandle<T> {
-    byte_offset: u64,
-    index: u64,
-    size: u64,
-    #[allow(unused)]
-    count: u64,
+    pub size_bytes: u32,
+    pub size_words: u32,
+    allocation: Allocation,
     allocator: Arc<GpuHeap<T>>,
 }
 
 impl<T: Pod> GpuHeapHandle<T> {
-    pub fn byte_offset(&self) -> u64 {
-        self.byte_offset
+    pub fn word_offset(&self) -> u32 {
+        self.allocation.offset
     }
 
-    pub fn index(&self) -> u64 {
-        self.index
-    }
-
-    pub fn size(&self) -> u64 {
-        self.size
-    }
-
-    pub fn count(&self) -> u64 {
-        self.count
+    pub fn byte_offset(&self) -> u32 {
+        self.allocation.offset * 4
     }
 
     pub fn buffer(&self) -> &wgpu::Buffer {
         self.allocator.buffer()
-    }
-
-    pub fn alignment(&self) -> u64 {
-        self.allocator.alignment()
     }
 
     pub fn write_data(&self, data: &[T]) {
@@ -68,17 +52,18 @@ impl<T> Drop for GpuHeapHandle<T> {
             .allocator
             .write()
             .unwrap()
-            .free(self.byte_offset);
+            .free(self.allocation);
     }
 }
 
-/// A managed GPU buffer with an internal Buddy allocator. Supports variable size allocations,
-/// but with some fragmentation overhead.
+/// A managed GPU buffer with an internal offset allocator.
+/// Always uses 4-byte alignment.
 pub struct GpuHeap<T> {
     buffer: wgpu::Buffer,
     queue: wgpu::Queue,
-    allocator: RwLock<BuddyAllocator>,
-    alignment: u64,
+    #[allow(unused)]
+    size_bytes: u32,
+    allocator: RwLock<Allocator>,
     #[allow(unused)]
     label: String,
     _marker: PhantomData<T>,
@@ -89,87 +74,80 @@ impl<T> GpuHeap<T> {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         usage: wgpu::BufferUsages,
-        size_bytes: u64,
-        alignment_bytes: u64,
+        size_bytes: u32,
+        max_allocs: u32,
         label: impl Into<String>,
     ) -> Self {
         let label = label.into();
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(&label),
-            size: size_bytes,
+            size: size_bytes as u64,
             usage: usage | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let allocator_config: AllocatorConfig = AllocatorConfig {
-            total_size: size_bytes,
-            min_order: 4, // 16 bytes
-            alignment: alignment_bytes,
-        };
-
-        let allocator = BuddyAllocator::new(allocator_config);
+        // To ensure 4-byte alignment, instead of using offset-allocator to manage bytes, we use 4 byte words (u32) instead.
+        assert!(
+            size_bytes.is_multiple_of(4),
+            "GpuHeap size must be a multiple of 4 bytes"
+        );
+        let size_words = size_bytes / 4;
+        let allocator = Allocator::with_max_allocs(size_words, max_allocs);
 
         GpuHeap {
             buffer,
             queue: queue.clone(),
+            size_bytes,
             allocator: RwLock::new(allocator),
-            alignment: alignment_bytes,
             label,
             _marker: PhantomData,
         }
     }
 
-    pub fn alignment(&self) -> u64 {
-        self.alignment
+    pub fn alignment(&self) -> u32 {
+        4
     }
 
-    pub fn allocate(self: Arc<Self>, count: u64) -> Option<GpuHeapHandle<T>> {
+    pub fn allocate(self: Arc<Self>, count: u32) -> Option<GpuHeapHandle<T>> {
         let mut allocator = self.allocator.write().unwrap();
-        let size_bytes = count * size_of::<T>() as u64;
-        if let Some(byte_offset) = allocator.allocate(size_bytes) {
+        let size_bytes = count * size_of::<T>() as u32;
+        let size_words = size_bytes.div_ceil(4); // Round up to nearest word
+        if let Some(allocation) = allocator.allocate(size_words) {
             Some(GpuHeapHandle {
-                byte_offset,
-                index: byte_offset / size_of::<T>() as u64,
-                count,
-                size: size_bytes,
+                size_bytes,
+                size_words,
+                allocation,
                 allocator: self.clone(),
             })
         } else {
+            let report = allocator.storage_report();
+            log::error!(
+                "ALLOCATION FAILED! Requested {} words ({} bytes), report: total_free_space={}, largest_free_region={}",
+                size_words,
+                size_bytes,
+                report.total_free_space,
+                report.largest_free_region
+            );
             None
         }
-    }
-
-    pub fn reallocate(&self, allocation: &mut GpuHeapHandle<T>, new_count: u64) -> Option<()> {
-        let new_size = new_count * size_of::<T>() as u64;
-        let mut allocator = self.allocator.write().unwrap();
-        let new_byte_offset = allocator.reallocate(allocation.byte_offset, new_size)?;
-        allocation.byte_offset = new_byte_offset;
-        allocation.index = new_byte_offset / size_of::<T>() as u64;
-        allocation.count = new_count;
-        allocation.size = new_size;
-        Some(())
     }
 
     pub fn buffer(&self) -> &wgpu::Buffer {
         &self.buffer
     }
 
-    pub fn size(&self) -> u64 {
-        self.allocator.read().unwrap().size()
-    }
-
-    pub fn get_stats(&self) -> BuddyAllocatorStats {
-        self.allocator.read().unwrap().get_stats()
+    pub fn allocator(&self) -> &RwLock<Allocator> {
+        &self.allocator
     }
 }
 
 impl<T: Pod> GpuHeap<T> {
     pub fn write_data(&self, allocation: &GpuHeapHandle<T>, data: &[T]) {
         let byte_data: &[u8] = bytemuck::cast_slice(data);
-        assert!(byte_data.len() as u64 <= allocation.size);
+        assert!(byte_data.len() as u64 <= allocation.size_bytes as u64);
         self.queue.write_buffer(
             &self.buffer,
-            allocation.byte_offset,
+            allocation.byte_offset() as u64,
             bytemuck::cast_slice(data),
         );
     }
@@ -181,7 +159,7 @@ impl<T: Pod> GpuHeap<T> {
         data: &[T],
     ) {
         let byte_data: &[u8] = bytemuck::cast_slice(data);
-        assert!(byte_data.len() as u64 <= allocation.size);
+        assert!(byte_data.len() as u64 <= allocation.size_bytes as u64);
         batcher.add_heap_update(allocation, data);
     }
 }

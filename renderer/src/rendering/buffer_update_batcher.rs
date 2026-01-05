@@ -64,7 +64,7 @@ impl BufferUpdateBatcher {
         self.updates.push(BatchedUpdate {
             buffer: handle.buffer().clone(),
             scratch_offset: cpu_offset,
-            buffer_offset: handle.byte_offset(),
+            buffer_offset: handle.byte_offset() as u64,
             length: aligned_length,
         });
     }

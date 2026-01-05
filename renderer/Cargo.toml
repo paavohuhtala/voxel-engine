@@ -21,6 +21,7 @@ rayon = "1.11.0"
 crossbeam-channel = "0.5.15"
 serde = { version = "1.0.228", features = ["derive"] }
 bitfield-struct = "0.12.1"
+offset-allocator = "0.2.0"
 
 [build-dependencies]
 wesl = "0.3.2"

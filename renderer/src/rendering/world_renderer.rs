@@ -72,8 +72,8 @@ impl WorldBuffers {
             device,
             queue,
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            FACE_BUFFER_SIZE_BYTES,
-            4,
+            FACE_BUFFER_SIZE_BYTES as u32,
+            (MAX_GPU_CHUNKS * 4) as u32,
             "World face buffer",
         );
 
@@ -100,7 +100,7 @@ impl WorldBuffers {
         let face_allocation = self
             .faces
             .clone()
-            .allocate(mesh_data.faces.len() as u64)
+            .allocate(mesh_data.faces.len() as u32)
             .with_context(|| {
                 format!(
                     "Failed to allocate {} faces for chunk mesh",
@@ -228,7 +228,7 @@ impl WorldRenderer {
             &GpuChunk {
                 position: chunk_mesh.position.0.extend(0),
                 face_count: mesh_data.faces.len() as u32,
-                face_byte_offset: chunk_mesh.faces_handle.byte_offset() as u32,
+                face_byte_offset: chunk_mesh.faces_handle.byte_offset(),
                 aabb,
                 _padding: 0,
             },
