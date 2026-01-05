@@ -20,8 +20,9 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> FullscreenVertexOutput {
     out.clip_position = vec4<f32>(x, y, 0.0, 1.0);
     out.uv = vec2<f32>(x * 0.5 + 0.5, y * 0.5 + 0.5);
 
+    // Reconstruct view ray at far plane (z = 0.0 for reverse-Z)
     let world_pos = camera.view_proj_inverse * out.clip_position;
-    let world_dir = normalize(world_pos.xyz - camera.camera_position.xyz * world_pos.w);
+    let world_dir = normalize(world_pos.xyz / world_pos.w - camera.camera_position.xyz);
     out.view_dir = world_dir;
 
     return out;
