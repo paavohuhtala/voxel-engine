@@ -37,10 +37,18 @@ use crate::rendering::{
     texture_manager::TextureManager,
 };
 
+pub enum ChunkMeshState {
+    /// We are currently waiting for the chunk mesh to be generated
+    Generating,
+    /// The chunk doesn't need a mesh, because it's either completely full or completely occluded
+    Empty,
+    /// The chunk mesh is ready to be rendered
+    Finished(ChunkMesh, GpuPoolHandle<GpuChunk>),
+}
+
 pub struct RenderChunk {
     pos: ChunkPos,
-    _mesh: Option<ChunkMesh>,
-    gpu_handle: GpuPoolHandle<GpuChunk>,
+    mesh: ChunkMeshState,
 }
 
 impl RenderChunk {
@@ -245,8 +253,7 @@ impl WorldRenderer {
 
         RenderChunk {
             pos,
-            _mesh: Some(chunk_mesh),
-            gpu_handle: gpu_chunk,
+            mesh: ChunkMeshState::Finished(chunk_mesh, gpu_chunk),
         }
     }
 
@@ -257,17 +264,19 @@ impl WorldRenderer {
         while let Ok(event) = self.mesh_receiver.try_recv() {
             match event {
                 ChunkMeshGeneratorEvent::Generated { pos, mesh } => {
-                    let render_chunk =
-                        Self::create_render_chunk_from_mesh(batcher, buffers, pos, &mesh);
-                    self.render_chunks.insert(pos, render_chunk);
-                    self.chunks_changed = true;
+                    self.render_chunks.entry(pos).and_modify(|current_chunk| {
+                        if mesh.faces.is_empty() {
+                            current_chunk.mesh = ChunkMeshState::Empty;
+                        } else {
+                            *current_chunk =
+                                Self::create_render_chunk_from_mesh(batcher, buffers, pos, &mesh);
+                        }
+                        self.chunks_changed = true;
+                    });
+                    // Since the update was done using and_modify, if we were not waiting for this chunk, we just ignore it
                 }
             }
         }
-    }
-
-    pub fn remove_chunk(&mut self, pos: ChunkPos) {
-        self.render_chunks.remove(&pos);
     }
 
     pub fn create_all_chunks(&mut self, world: &World) {
@@ -299,6 +308,40 @@ impl WorldRenderer {
         }
     }
 
+    pub fn sync_with_world(&mut self, world: &mut World) {
+        self.remove_stale_chunks(world);
+        self.queue_chunks_for_meshing(world);
+    }
+
+    fn queue_chunks_for_meshing(&mut self, world: &mut World) {
+        // TODO: Reuse vec
+        let mut chunks_to_mesh = Vec::new();
+        world.drain_chunks_ready_for_meshing(&mut chunks_to_mesh);
+
+        for pos in chunks_to_mesh {
+            self.mesh_generator.generate_chunk_mesh_async(world, pos);
+            // Create a placeholder render chunk to mark that we're generating this chunk
+            self.render_chunks.insert(
+                pos,
+                RenderChunk {
+                    pos,
+                    mesh: ChunkMeshState::Generating,
+                },
+            );
+        }
+    }
+
+    fn remove_stale_chunks(&mut self, world: &mut World) {
+        let mut chunks_to_unload = Vec::new();
+        world.drain_chunks_ready_to_unload(&mut chunks_to_unload);
+
+        for pos in chunks_to_unload {
+            // TODO: Cancel generation job if still generating
+            // This has mostly the same effect, since when the job finishes, the results will be ignored
+            self.render_chunks.remove(&pos);
+        }
+    }
+
     pub fn resize(&mut self, size: Resolution) {
         self.camera.resize(size);
         self.scene_texture.resize(&self.device, size);
@@ -323,19 +366,25 @@ impl WorldRenderer {
         let eye = self.camera.eye(time.blending_factor as f32);
 
         if self.chunks_changed {
-            let mut render_chunks: Vec<&RenderChunk> = self.render_chunks.values().collect();
+            let mut render_chunks = self
+                .render_chunks
+                .values()
+                .filter_map(|chunk| match &chunk.mesh {
+                    ChunkMeshState::Finished(_, handle) => Some((chunk.center(), handle.offset())),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
 
             // Sort by distance to camera
-            render_chunks.sort_unstable_by_key(|chunk| {
-                let chunk_center = chunk.center();
-                let distance_sq = eye.distance_squared(chunk_center);
+            render_chunks.sort_unstable_by_key(|(chunk_center, _)| {
+                let distance_sq = eye.distance_squared(*chunk_center);
                 OrderedFloat(distance_sq)
             });
 
             self.chunk_ids.clear();
 
-            for chunk in &render_chunks {
-                self.chunk_ids.push(chunk.gpu_handle.offset() as u32);
+            for (_, chunk_id) in &render_chunks {
+                self.chunk_ids.push(*chunk_id as u32);
             }
 
             self.chunks_changed = false;

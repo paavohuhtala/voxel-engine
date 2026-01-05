@@ -106,6 +106,7 @@ impl World {
                     added += 1;
                     self.chunks.insert(pos, *chunk);
 
+                    // TODO: Skip meshing-related checks when running headless
                     if self.is_chunk_ready_for_meshing(pos) {
                         self.ready_for_meshing.insert(pos);
                     }
@@ -134,11 +135,11 @@ impl World {
         }
     }
 
-    pub fn get_chunks_ready_for_meshing(&mut self, chunk_positions: &mut Vec<ChunkPos>) {
+    pub fn drain_chunks_ready_for_meshing(&mut self, chunk_positions: &mut Vec<ChunkPos>) {
         chunk_positions.extend(self.ready_for_meshing.drain());
     }
 
-    pub fn get_chunks_ready_to_unload(&mut self, chunk_positions: &mut Vec<ChunkPos>) {
+    pub fn drain_chunks_ready_to_unload(&mut self, chunk_positions: &mut Vec<ChunkPos>) {
         chunk_positions.extend(self.ready_to_unload.drain());
     }
 

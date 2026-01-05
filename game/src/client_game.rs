@@ -52,49 +52,19 @@ impl Game for ClientGame {
 
         self.ctx.world.update();
 
-        // TODO: Reuse vec
-        let mut chunks_to_mesh = Vec::new();
-        self.ctx
-            .world
-            .get_chunks_ready_for_meshing(&mut chunks_to_mesh);
-
-        for pos in chunks_to_mesh {
-            self.renderer
-                .as_mut()
-                .unwrap()
-                .world_renderer
-                .mesh_generator
-                .generate_chunk_mesh_async(&self.ctx.world, pos);
-        }
-
-        // Unload chunks
-        let mut chunks_to_unload = Vec::new();
-        self.ctx
-            .world
-            .get_chunks_ready_to_unload(&mut chunks_to_unload);
-
-        for pos in chunks_to_unload {
-            self.renderer
-                .as_mut()
-                .unwrap()
-                .world_renderer
-                .remove_chunk(pos);
-        }
-
         Ok(())
     }
 
     #[profiling::function]
     fn render(&mut self, time: &GameLoopTime) -> anyhow::Result<()> {
-        if let Some(renderer) = &mut self.renderer {
-            renderer.set_camera(&self.ctx.player.camera);
-        }
-
         self.draw_egui();
 
         let Some(renderer) = &mut self.renderer else {
             return Ok(());
         };
+
+        renderer.set_camera(&self.ctx.player.camera);
+        renderer.world_renderer.sync_with_world(&mut self.ctx.world);
 
         let egui_renderer = &mut self.egui;
 

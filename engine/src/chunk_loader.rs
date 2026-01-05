@@ -101,7 +101,7 @@ struct ChunkLoaderWorker {
 
 impl ChunkLoaderWorker {
     // TODO: Make configurable
-    const VIEW_DISTANCE: i32 = 12;
+    const VIEW_DISTANCE: i32 = 16;
     const VIEW_DISTANCE_Y: i32 = 6;
 
     pub fn new(

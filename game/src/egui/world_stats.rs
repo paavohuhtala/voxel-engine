@@ -32,7 +32,7 @@ pub fn draw_world_stats_ui(world_renderer: &WorldRenderer, world: &World, contex
                 .spacing((8.0, 4.0))
                 .striped(true)
                 .show(ui, |ui| {
-                    ui.label("World chunks:");
+                    ui.label("Loaded chunks:");
                     ui.label(format!("{}", world_stats.total_loaded_chunks));
                     ui.end_row();
 
@@ -46,7 +46,7 @@ pub fn draw_world_stats_ui(world_renderer: &WorldRenderer, world: &World, contex
                     ui.label("");
                     ui.end_row();
 
-                    ui.label("Rendered chunks:");
+                    ui.label("Renderer chunks:");
                     ui.label(format!("{}", renderer_stats.loaded_chunks));
                     ui.end_row();
 

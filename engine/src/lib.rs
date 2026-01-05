@@ -17,6 +17,7 @@ pub mod chunk_loader;
 pub mod config;
 pub mod game_loop;
 pub mod gameplay;
+pub mod limits;
 pub mod math;
 pub mod memory;
 pub mod player;
