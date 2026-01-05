@@ -61,12 +61,15 @@ fn main(
         // The vertex shader undoes this packing to get the chunk id back.
         let packed_chunk_id = bitcast<i32>(insertBits(0u, chunk_id, 2u, 30u));
 
+        // first_instance = 0 because the vertex shader uses chunk.face_byte_offset
+        // to calculate the absolute byte position of each face.
+        // instance_index (local_face_index) will be 0, 1, 2, ... for each face in the chunk.
         draw_commands[index] = DrawIndexedIndirect(
             6,
             chunk.face_count,
             0,
             packed_chunk_id,
-            chunk.face_data_offset
+            0u  // first_instance = 0, local face indices start at 0
         );
     }
 }

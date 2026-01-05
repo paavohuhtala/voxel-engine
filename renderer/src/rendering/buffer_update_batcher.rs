@@ -1,3 +1,5 @@
+use std::iter;
+
 use bytemuck::Pod;
 use wgpu::{Buffer, Device, util::DeviceExt};
 
@@ -43,14 +45,27 @@ impl BufferUpdateBatcher {
         T: Pod,
     {
         let byte_data: &[u8] = bytemuck::cast_slice(data);
+        if byte_data.is_empty() {
+            return;
+        }
+
+        // Ensure scratch offset is 4-byte aligned (required by copy_buffer_to_buffer)
+        let padding_needed = (4 - (self.data.len() % 4)) % 4;
+        self.data.extend(iter::repeat_n(0u8, padding_needed));
+
         let cpu_offset = self.data.len();
         self.data.extend_from_slice(byte_data);
+
+        // Round up copy length to 4-byte alignment
+        let aligned_length = (byte_data.len() + 3) & !3;
+        let extra_padding = aligned_length - byte_data.len();
+        self.data.extend(iter::repeat_n(0u8, extra_padding));
 
         self.updates.push(BatchedUpdate {
             buffer: handle.buffer().clone(),
             scratch_offset: cpu_offset,
             buffer_offset: handle.byte_offset(),
-            length: byte_data.len(),
+            length: aligned_length,
         });
     }
 

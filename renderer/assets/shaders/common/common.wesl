@@ -1,7 +1,7 @@
 
 struct Chunk {
     position: vec4<i32>,
-    face_data_offset: u32,
+    face_byte_offset: u32,
     face_count: u32,
     aabb: u32,
     padding: u32,

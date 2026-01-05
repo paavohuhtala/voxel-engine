@@ -228,7 +228,7 @@ impl WorldRenderer {
             &GpuChunk {
                 position: chunk_mesh.position.0.extend(0),
                 face_count: mesh_data.faces.len() as u32,
-                face_data_offset: chunk_mesh.faces_handle.index() as u32,
+                face_byte_offset: chunk_mesh.faces_handle.byte_offset() as u32,
                 aabb,
                 _padding: 0,
             },

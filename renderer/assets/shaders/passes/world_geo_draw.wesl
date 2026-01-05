@@ -8,12 +8,42 @@ var<uniform> camera: Camera;
 @group(1) @binding(0)
 var<storage, read> chunks: array<Chunk>;
 @group(1) @binding(1)
-var<storage, read> faces: array<vec2<u32>>;
+var<storage, read> faces_raw: array<u32>;
 
 @group(2) @binding(0)
 var textures: texture_2d_array<f32>;
 @group(2) @binding(1)
 var array_sampler: sampler;
+
+// Read a 6-byte packed face from the faces buffer given a byte offset.
+// Each face is 6 bytes: 4 bytes geometry + 2 bytes texture index.
+// We read from the u32 array and reconstruct the face data.
+fn read_face_at_byte_offset(byte_offset: u32) -> VoxelFace {
+    // Calculate u32 index and position within that u32
+    let u32_index = byte_offset / 4u;
+    let byte_in_u32 = byte_offset % 4u;
+
+    var geometry: u32;
+    var texture_index: u32;
+
+    // Depending on alignment, the face can start at byte 0 or 2 within a u32
+    if (byte_in_u32 == 0u) {
+        // Face starts at u32 boundary
+        geometry = faces_raw[u32_index];
+        texture_index = faces_raw[u32_index + 1u] & 0xFFFFu;
+    } else if (byte_in_u32 == 2u) {
+        // Face starts at byte 2
+        let word0 = faces_raw[u32_index];
+        let word1 = faces_raw[u32_index + 1u];
+        geometry = (word0 >> 16u) | (word1 << 16u);
+        texture_index = word1 >> 16u;
+    } else {
+        // byte_in_u32 == 1 or 3: shouldn't happen with 4-byte aligned allocations
+        return unpack_face(0u, 0u);
+    }
+
+    return unpack_face(geometry, texture_index);
+}
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -29,7 +59,7 @@ struct VertexOutput {
 @vertex
 fn vs_main(
     @builtin(vertex_index) index_and_chunk_index: u32,
-    @builtin(instance_index) face_index: u32
+    @builtin(instance_index) local_face_index: u32
 ) -> VertexOutput {
     // Decode chunk index and vertex index
     let vertex_index = extractBits(index_and_chunk_index, 0u, 2u);
@@ -37,7 +67,12 @@ fn vs_main(
 
     let chunk = chunks[chunk_index];
     let chunk_origin = vec3<f32>(chunk.position.xyz) * 16.0;
-    let face = unpack_face(faces[face_index]);
+    
+    // Calculate byte offset for this face
+    // local_face_index is 0, 1, 2, ... for faces within this chunk
+    // chunk.face_byte_offset is the byte offset of the first face
+    let face_byte_offset = chunk.face_byte_offset + local_face_index * 6u;
+    let face = read_face_at_byte_offset(face_byte_offset);
 
     var vertex_data = get_vertex(
         vertex_index,

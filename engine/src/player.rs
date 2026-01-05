@@ -45,7 +45,8 @@ impl Player {
             camera,
             is_local: true,
             camera_path,
-            camera_mode: CameraMode::Rotate { angle: 0.0 },
+            //camera_mode: CameraMode::Rotate { angle: 0.0 },
+            camera_mode: CameraMode::Path { progress: 0.0 },
             should_move_camera: true,
         }
     }
