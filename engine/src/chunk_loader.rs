@@ -28,7 +28,7 @@ use crate::{
 #[derive(Debug)]
 pub enum ChunkLoaderEvent {
     ChunkMeshesReady(Vec<ChunkMeshUpdate>),
-    ChunkUnloaded { pos: ChunkPos },
+    ChunksUnloaded(Vec<ChunkPos>),
 }
 
 // Used by the main thread to communicate with the chunk loader thread
@@ -49,7 +49,7 @@ pub trait WorldAccess<T>: Send + Sync {
     fn insert_chunk_data(&self, pos: ChunkPos, data: ChunkData, sender: &Sender<ChunkWorkerEvent>);
     fn insert_render_state(&self, pos: ChunkPos, render_state: T);
     fn remove_chunk(&self, pos: ChunkPos);
-    fn unload_chunks_outside_distance(&self, center: ChunkPos, distance: u32);
+    fn unload_chunks_outside_distance(&self, center: ChunkPos, distance: u32) -> Vec<ChunkPos>;
     fn get_chunk_state(&self, pos: ChunkPos) -> Option<ChunkState>;
     fn set_chunk_state(&self, pos: ChunkPos, state: ChunkState);
 }
@@ -130,11 +130,17 @@ impl<T: IChunkRenderState> WorldAccess<T> for DashMap<ChunkPos, Chunk<T>> {
         }
     }
 
-    fn unload_chunks_outside_distance(&self, center: ChunkPos, distance: u32) {
+    fn unload_chunks_outside_distance(&self, center: ChunkPos, distance: u32) -> Vec<ChunkPos> {
+        let mut removed = Vec::new();
         self.retain(|pos, _chunk| {
             let dist = pos.0.chebyshev_distance(center.0);
-            dist <= distance
+            let keep = dist <= distance;
+            if !keep {
+                removed.push(*pos);
+            }
+            keep
         });
+        removed
     }
 
     fn get_chunk_state(&self, pos: ChunkPos) -> Option<ChunkState> {
@@ -318,8 +324,13 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
 
         // Unload chunks that are now out of range
         // TODO: This might be slow
-        self.world_access
+        let unloaded = self
+            .world_access
             .unload_chunks_outside_distance(current_chunk, LOAD_DISTANCE as u32);
+
+        self.event_sender
+            .send(ChunkLoaderEvent::ChunksUnloaded(unloaded))
+            .unwrap();
 
         // Enqueue new chunks for generation
         for offset in &self.desired_generation_offsets {

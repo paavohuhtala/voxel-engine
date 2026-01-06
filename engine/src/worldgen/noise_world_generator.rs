@@ -5,7 +5,7 @@ use noise::{NoiseFn, SuperSimplex};
 use rayon::prelude::*;
 
 use crate::{
-    assets::blocks::{BlockDatabase, BlockDatabaseSlim},
+    assets::blocks::BlockDatabaseSlim,
     voxels::{
         chunk::{CHUNK_SIZE, ChunkData, IChunkRenderState},
         coord::{ChunkPos, LocalPos},

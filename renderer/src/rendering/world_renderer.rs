@@ -291,6 +291,25 @@ impl WorldRenderer {
                                 update.pos,
                                 mesh_id
                             );
+
+                            // If this position already has an entry, remove it first (re-mesh case)
+                            if let Some(old_index) = self.pos_to_index.remove(&update.pos) {
+                                let old_id = self.chunk_ids[old_index];
+                                self.id_to_index.remove(&old_id);
+
+                                let last_index = self.chunk_ids.len() - 1;
+                                self.chunk_ids.swap_remove(old_index);
+                                self.chunk_positions.swap_remove(old_index);
+
+                                // Update moved element's index if we didn't remove the last one
+                                if old_index != last_index {
+                                    let moved_id = self.chunk_ids[old_index];
+                                    let moved_pos = self.chunk_positions[old_index];
+                                    self.id_to_index.insert(moved_id, old_index);
+                                    self.pos_to_index.insert(moved_pos, old_index);
+                                }
+                            }
+
                             let index = self.chunk_ids.len();
                             self.chunk_ids.push(mesh_id as u32);
                             self.chunk_positions.push(update.pos);
@@ -299,21 +318,23 @@ impl WorldRenderer {
                         }
                     }
                 }
-                ChunkLoaderEvent::ChunkUnloaded { pos } => {
-                    if let Some(index_to_remove) = self.pos_to_index.remove(&pos) {
-                        let last_index = self.chunk_ids.len() - 1;
+                ChunkLoaderEvent::ChunksUnloaded(positions) => {
+                    for pos in positions {
+                        if let Some(index_to_remove) = self.pos_to_index.remove(&pos) {
+                            let last_index = self.chunk_ids.len() - 1;
 
-                        let removed_id = self.chunk_ids[index_to_remove];
-                        self.id_to_index.remove(&removed_id);
+                            let removed_id = self.chunk_ids[index_to_remove];
+                            self.id_to_index.remove(&removed_id);
 
-                        self.chunk_ids.swap_remove(index_to_remove);
-                        self.chunk_positions.swap_remove(index_to_remove);
+                            self.chunk_ids.swap_remove(index_to_remove);
+                            self.chunk_positions.swap_remove(index_to_remove);
 
-                        if index_to_remove != last_index {
-                            let moved_id = self.chunk_ids[index_to_remove];
-                            let moved_pos = self.chunk_positions[index_to_remove];
-                            self.id_to_index.insert(moved_id, index_to_remove);
-                            self.pos_to_index.insert(moved_pos, index_to_remove);
+                            if index_to_remove != last_index {
+                                let moved_id = self.chunk_ids[index_to_remove];
+                                let moved_pos = self.chunk_positions[index_to_remove];
+                                self.id_to_index.insert(moved_id, index_to_remove);
+                                self.pos_to_index.insert(moved_pos, index_to_remove);
+                            }
                         }
                     }
                 }
