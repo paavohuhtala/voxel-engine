@@ -1,10 +1,13 @@
+use std::sync::Arc;
+
 use glam::{DVec2, Vec3Swizzles};
 use noise::{NoiseFn, SuperSimplex};
 use rayon::prelude::*;
 
 use crate::{
+    assets::blocks::BlockDatabaseSlim,
     voxels::{
-        chunk::{CHUNK_SIZE, Chunk},
+        chunk::{CHUNK_SIZE, ChunkData, IChunkRenderState},
         coord::{ChunkPos, LocalPos},
         unpacked_chunk::UnpackedChunk,
         voxel::Voxel,
@@ -24,7 +27,7 @@ impl WorldGenerator for NoiseWorldGenerator {
         }
     }
 
-    fn generate_chunk(&self, chunk_pos: ChunkPos) -> Chunk {
+    fn generate_chunk(&self, chunk_pos: ChunkPos) -> ChunkData {
         let mut chunk = UnpackedChunk::new();
         let origin_pos = chunk_pos.origin();
         let origin_2d = origin_pos.0.xz().as_dvec2();
@@ -53,12 +56,16 @@ impl WorldGenerator for NoiseWorldGenerator {
             }
         }
 
-        Chunk::from(chunk)
+        ChunkData::from(chunk)
     }
 }
 
 #[allow(unused)]
-pub fn generate_noise_world(initial_size: i32) -> World {
+pub fn generate_noise_world<T: IChunkRenderState>(
+    initial_size: i32,
+    db: Arc<BlockDatabaseSlim>,
+    render_context: T::Context,
+) -> World<T> {
     let generator = NoiseWorldGenerator::new(123_456);
 
     let chunk_range = -(initial_size / 2)..(initial_size / 2);
@@ -74,5 +81,5 @@ pub fn generate_noise_world(initial_size: i32) -> World {
         })
         .collect::<Vec<_>>();
 
-    World::from_chunks(generator, chunks)
+    World::from_chunks(generator, db, chunks, render_context)
 }

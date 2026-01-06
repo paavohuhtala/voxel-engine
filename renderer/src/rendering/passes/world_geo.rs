@@ -115,7 +115,6 @@ impl WorldGeometryPass {
                     "World texture array",
                     wgpu::BindingResource::TextureView(texture_manager.array_texture_view()),
                     wgpu::TextureSampleType::Float { filterable: true },
-                    texture_manager.texture_capacity() as u32,
                 )
                 .sampler(
                     1,

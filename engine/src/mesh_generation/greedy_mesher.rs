@@ -1,11 +1,15 @@
 use std::sync::Arc;
 
-use engine::{
+use crate::{
     assets::blocks::BlockDatabaseSlim,
     math::{
         axis::Axis,
         basis::Basis,
         local_vec::{ConstructLocalVec3, LocalVec3},
+    },
+    mesh_generation::{
+        chunk_mesh::{ChunkMeshData, PackedVoxelFace, VoxelFace},
+        chunk_mesh_generator_input::ChunkMeshGeneratorInput,
     },
     voxels::{
         chunk::CHUNK_SIZE,
@@ -16,45 +20,37 @@ use engine::{
 };
 use glam::{IVec3, U8Vec2, U8Vec3};
 
-use crate::rendering::{
-    chunk_mesh::ChunkMeshData,
-    chunk_mesh::{PackedVoxelFace, VoxelFace},
-    mesh_generation::chunk_mesh_generator_input::ChunkMeshGeneratorInput,
-};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FaceDirection {
     Positive,
     Negative,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum MaskEntry {
+    #[default]
+    Empty,
     VoxelFace {
         voxel: Voxel,
         direction: FaceDirection,
         ao: [u8; 4],
     },
-    Empty,
 }
 
 pub struct GreedyMesher {
     block_database: Arc<BlockDatabaseSlim>,
-    mask: Vec<MaskEntry>,
 }
+
+const MASK_SIZE: usize = (CHUNK_SIZE as usize) * (CHUNK_SIZE as usize);
+type Mask = [MaskEntry; MASK_SIZE];
 
 impl GreedyMesher {
     pub fn new(block_database: Arc<BlockDatabaseSlim>) -> Self {
-        const CHUNK_USIZE: usize = CHUNK_SIZE as usize;
-        GreedyMesher {
-            block_database,
-            mask: vec![MaskEntry::Empty; CHUNK_USIZE.pow(2)],
-        }
+        GreedyMesher { block_database }
     }
 
-    pub fn generate_mesh(&mut self, input: &ChunkMeshGeneratorInput) -> ChunkMeshData {
+    pub fn generate_mesh(&self, input: &ChunkMeshGeneratorInput) -> ChunkMeshData {
         let mut chunk_mesh_data = ChunkMeshData::from_position(input.center_pos);
-
         const AXES: [Axis; 3] = [Axis::X, Axis::Y, Axis::Z];
         // For each principal axis, construct a 2D mask and generate quads for exposed faces
         for d_axis in AXES {
@@ -78,26 +74,30 @@ impl GreedyMesher {
     }
 
     fn create_faces_for_axis(
-        &mut self,
+        &self,
         input: &ChunkMeshGeneratorInput,
         mesh_data: &mut ChunkMeshData,
         d_axis: Axis,
     ) {
         let basis = Basis::new(d_axis.u_axis(), d_axis.v_axis(), d_axis);
+        let mut mask: Mask = [MaskEntry::Empty; MASK_SIZE];
 
         // Iterate across the depth of the chunk along the current axis
         // Note that this is an inclusive range to handle the back faces of the last layer
         for depth in 0..=(CHUNK_SIZE as i32) {
-            self.create_mask_for_slice(input, basis, depth);
-            self.create_faces_at_depth(mesh_data, basis, depth);
+            self.create_mask_for_slice(&mut mask, input, basis, depth);
+            self.create_faces_at_depth(&mut mask, mesh_data, basis, depth);
         }
     }
 
-    fn create_mask_for_slice(&mut self, input: &ChunkMeshGeneratorInput, basis: Basis, depth: i32) {
+    fn create_mask_for_slice(
+        &self,
+        mask: &mut Mask,
+        input: &ChunkMeshGeneratorInput,
+        basis: Basis,
+        depth: i32,
+    ) {
         const N: i32 = CHUNK_SIZE as i32;
-
-        // Clear the mask completely
-        self.mask.fill(MaskEntry::Empty);
 
         for v in 0..N {
             for u in 0..N {
@@ -139,12 +139,18 @@ impl GreedyMesher {
                     // Both faces of the voxel are either exposed or hidden, skip
                     _ => MaskEntry::Empty,
                 };
-                self.mask[(v * N + u) as usize] = entry;
+                mask[(v * N + u) as usize] = entry;
             }
         }
     }
 
-    fn create_faces_at_depth(&mut self, mesh_data: &mut ChunkMeshData, basis: Basis, depth: i32) {
+    fn create_faces_at_depth(
+        &self,
+        mask: &mut Mask,
+        mesh_data: &mut ChunkMeshData,
+        basis: Basis,
+        depth: i32,
+    ) {
         const N: usize = CHUNK_SIZE as usize;
 
         // Iterate over the mask for this slice and generate quads
@@ -156,7 +162,7 @@ impl GreedyMesher {
                     voxel,
                     direction,
                     ao,
-                } = self.mask[index + u]
+                } = mask[index + u]
                 else {
                     // The mask is empty here, skip
                     u += 1;
@@ -168,7 +174,7 @@ impl GreedyMesher {
                 // Expand width
                 let mut width = 1;
                 while u + width < N {
-                    if self.mask[index + u + width] == entry {
+                    if mask[index + u + width] == entry {
                         width += 1;
                     } else {
                         break;
@@ -181,7 +187,7 @@ impl GreedyMesher {
                     // Find the next row below the current quad
                     // Since they're laid out linearly in memory, we can create a slice for it
                     let row_start = index + (height * N) + u;
-                    let next_row_slice = &self.mask[row_start..(row_start + width)];
+                    let next_row_slice = &mask[row_start..(row_start + width)];
                     if next_row_slice.iter().all(|&e| e == entry) {
                         height += 1;
                     } else {
@@ -208,7 +214,7 @@ impl GreedyMesher {
                 // Zero out the mask entries we just consumed
                 for h in 0..height {
                     let row_start = index + (h * N) + u;
-                    self.mask[row_start..(row_start + width)].fill(MaskEntry::Empty);
+                    mask[row_start..(row_start + width)].fill(MaskEntry::Empty);
                 }
 
                 // Skip past the quad we just generated
@@ -334,23 +340,23 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use engine::{
-        assets::blocks::TextureIndices,
+    use crate::{
+        assets::{blocks::TextureIndices, world_textures::WorldTextureHandle},
         voxels::{coord::ChunkPos, voxel::Voxel},
     };
     use glam::{IVec3, U8Vec2, U8Vec3};
 
     fn create_test_block_database() -> Arc<BlockDatabaseSlim> {
         let mut db = BlockDatabaseSlim::new();
-        db.add_block(TextureIndices::new_single(0));
-        db.add_block(TextureIndices::new_single(1));
+        db.add_block(TextureIndices::new_single(WorldTextureHandle(0)));
+        db.add_block(TextureIndices::new_single(WorldTextureHandle(1)));
         Arc::new(db)
     }
 
     #[test]
     fn test_single_voxel() {
         let db = create_test_block_database();
-        let mut mesher = GreedyMesher::new(db);
+        let mesher = GreedyMesher::new(db);
         let center_pos = ChunkPos::new(0, 0, 0);
         let mut input = ChunkMeshGeneratorInput::new_empty(center_pos);
 
@@ -384,7 +390,7 @@ mod tests {
     #[test]
     fn test_greedy_merging() {
         let db = create_test_block_database();
-        let mut mesher = GreedyMesher::new(db);
+        let mesher = GreedyMesher::new(db);
         let center_pos = ChunkPos::new(0, 0, 0);
         let mut input = ChunkMeshGeneratorInput::new_empty(center_pos);
 

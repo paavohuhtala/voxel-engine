@@ -1,7 +1,7 @@
 use std::hint::unreachable_unchecked;
 
 use crate::voxels::{
-    chunk::{CHUNK_SIZE, Chunk},
+    chunk::{CHUNK_SIZE, Chunk, ChunkData, IChunkRenderState},
     coord::LocalPos,
     face::Face,
     voxel::Voxel,
@@ -26,13 +26,20 @@ impl Border {
         }
     }
 
-    pub fn copy_from_chunk(&mut self, chunk: &Chunk) {
-        match chunk {
-            Chunk::Solid(voxel) => {
+    pub fn copy_from_chunk<T: IChunkRenderState>(&mut self, chunk: &Chunk<T>) {
+        let Some(chunk_data) = chunk.data.as_ref() else {
+            panic!(
+                "Tried to copy border from chunk at position {:?} which has no data",
+                chunk.position
+            );
+        };
+
+        match chunk_data {
+            ChunkData::Solid(voxel) => {
                 self.voxels.fill(*voxel);
                 self.occludes = !voxel.is_transparent();
             }
-            Chunk::Packed(packed) => {
+            ChunkData::Packed(packed) => {
                 let mut occludes = true;
                 // Use the orientation to determine which border to copy
                 for x in 0..CHUNK_SIZE {

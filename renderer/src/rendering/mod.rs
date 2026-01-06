@@ -3,7 +3,6 @@ pub mod chunk_mesh;
 pub mod common;
 pub mod limits;
 pub mod memory;
-pub mod mesh_generation;
 pub mod passes;
 pub mod postfx;
 pub mod postfx_constants;

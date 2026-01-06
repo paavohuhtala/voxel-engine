@@ -5,7 +5,7 @@ use crate::math::aabb::AABB;
 use crate::math::plane::Plane;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable, Default)]
 pub struct Frustum {
     // Planes are in the order: left, right, bottom, top, near, far
     pub planes: [Plane; 6],

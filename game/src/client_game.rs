@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use egui_wgpu::ScreenDescriptor;
-use renderer::{renderer::Renderer, rendering::resolution::Resolution};
+use renderer::{
+    renderer::Renderer,
+    rendering::resolution::{PhysicalSizeExt, Resolution},
+};
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, KeyEvent},
@@ -11,24 +14,30 @@ use winit::{
 };
 
 use engine::{
-    EngineContext,
     config::config_manager::ConfigManager,
     game_loop::{Game, GameLoopTime},
 };
 
 use crate::{
+    client_types::ClientEngineContext,
     config::ClientConfig,
-    egui::{egui_instance::EguiInstance, world_stats::draw_world_stats_ui},
+    egui::{
+        chunk_inspector::{ChunkInspectorState, draw_chunk_inspector_ui},
+        egui_instance::EguiInstance,
+        timeline::draw_timeline,
+        world_stats::draw_world_stats_ui,
+    },
     fps_counter::FpsCounter,
 };
 
 pub struct ClientGame {
     should_exit: bool,
-    renderer: Option<Renderer>,
+    pub renderer: Option<Renderer>,
     pub egui: Option<EguiInstance>,
-    ctx: EngineContext,
+    pub ctx: ClientEngineContext,
     client_config: ConfigManager<ClientConfig>,
     fps_counter: FpsCounter,
+    chunk_inspector: ChunkInspectorState,
 }
 
 impl Game for ClientGame {
@@ -45,14 +54,25 @@ impl Game for ClientGame {
         // self.ctx.physics.update(time.delta_time_s as f32);
         self.ctx.player.update(time);
 
-        self.ctx
-            .world
-            .chunk_loader
-            .update_camera_position(self.ctx.player.camera.get_current_chunk());
-
-        self.ctx.world.update();
-
         Ok(())
+    }
+
+    fn before_render(&mut self, time: &GameLoopTime) {
+        let Some(renderer) = &mut self.renderer else {
+            return;
+        };
+
+        let resolution = renderer.resolution();
+        self.ctx.player.before_render(resolution.to_vec2());
+        renderer.set_camera(&self.ctx.player.camera, time);
+
+        if let Some(world) = &mut self.ctx.world {
+            *world.chunk_loader.camera.write().unwrap() =
+                renderer.world_renderer.camera.interpolated_camera.clone();
+
+            // We probably shouldn't do this every frame, but it's fine for now
+            world.chunk_loader.notify_camera_moved();
+        }
     }
 
     #[profiling::function]
@@ -63,8 +83,9 @@ impl Game for ClientGame {
             return Ok(());
         };
 
-        renderer.set_camera(&self.ctx.player.camera);
-        renderer.world_renderer.sync_with_world(&mut self.ctx.world);
+        if let Some(world) = &self.ctx.world {
+            renderer.world_renderer.sync_with_world(world);
+        }
 
         let egui_renderer = &mut self.egui;
 
@@ -93,7 +114,10 @@ impl Game for ClientGame {
 }
 
 impl ClientGame {
-    pub fn new(engine_context: EngineContext, client_config: ConfigManager<ClientConfig>) -> Self {
+    pub fn new(
+        engine_context: ClientEngineContext,
+        client_config: ConfigManager<ClientConfig>,
+    ) -> Self {
         ClientGame {
             should_exit: false,
             renderer: None,
@@ -101,6 +125,7 @@ impl ClientGame {
             ctx: engine_context,
             client_config,
             fps_counter: FpsCounter::new(),
+            chunk_inspector: ChunkInspectorState::default(),
         }
     }
 
@@ -109,17 +134,32 @@ impl ClientGame {
     }
 
     fn draw_egui(&mut self) {
+        let player = &mut self.ctx.player;
         let Some(egui_renderer) = &mut self.egui else {
             return;
         };
 
         self.fps_counter.draw_ui(egui_renderer.ctx());
+        draw_timeline(player, egui_renderer.ctx());
 
-        draw_world_stats_ui(
-            &self.renderer.as_ref().unwrap().world_renderer,
-            &self.ctx.world,
-            egui_renderer.ctx(),
-        );
+        if let Some(world) = &self.ctx.world {
+            draw_world_stats_ui(
+                &self.renderer.as_ref().unwrap().world_renderer,
+                world,
+                egui_renderer.ctx(),
+            );
+
+            if let Some(renderer) = &mut self.renderer {
+                let resolution = renderer.resolution();
+                draw_chunk_inspector_ui(
+                    &mut self.chunk_inspector,
+                    &mut renderer.world_renderer,
+                    world,
+                    egui_renderer.ctx(),
+                    resolution,
+                );
+            }
+        }
     }
 
     pub fn on_resumed(&mut self, window: Arc<Window>) {
@@ -135,7 +175,7 @@ impl ClientGame {
 
         renderer.set_camera_immediate(&self.ctx.player.camera);
 
-        renderer.world_renderer.create_all_chunks(&self.ctx.world);
+        // renderer.world_renderer.create_all_chunks(&self.ctx.world);
 
         self.renderer = Some(renderer);
     }
@@ -144,6 +184,11 @@ impl ClientGame {
         self.client_config.update_and_save(|config| {
             config.window_size = Some((size.width, size.height));
         });
+        self.ctx.player.camera.update_matrices(size.to_vec2());
+        self.renderer
+            .as_mut()
+            .unwrap()
+            .set_camera_immediate(&self.ctx.player.camera);
         self.renderer.as_mut().unwrap().resize(size);
     }
 
@@ -184,6 +229,10 @@ impl ClientGame {
             (KeyCode::F4, ElementState::Pressed) => {
                 let world_renderer = &mut self.renderer.as_mut().unwrap().world_renderer;
                 world_renderer.camera.toggle_face_colors();
+            }
+            (KeyCode::F5, ElementState::Pressed) => {
+                let world_renderer = &mut self.renderer.as_mut().unwrap().world_renderer;
+                world_renderer.toggle_chunk_bounds();
             }
             _ => {}
         }

@@ -1,20 +1,16 @@
 use std::sync::Arc;
 
-use crossbeam_channel::{Receiver, Sender};
-use engine::{
+use crate::{
     assets::blocks::BlockDatabaseSlim,
-    voxels::{chunk::Chunk, coord::ChunkPos},
-    world::World,
+    voxels::{chunk::ChunkData, coord::ChunkPos},
 };
+use crossbeam_channel::{Receiver, Sender};
 
-use crate::rendering::{
-    chunk_mesh::ChunkMeshData,
-    mesh_generation::{
-        chunk_mesh_generator_input::ChunkMeshGeneratorInput, greedy_mesher::GreedyMesher,
-    },
-};
 pub enum ChunkMeshGeneratorCommand {
-    GenerateMesh { pos: ChunkPos, chunk: Box<Chunk> },
+    GenerateMesh {
+        pos: ChunkPos,
+        chunk: Box<ChunkData>,
+    },
 }
 
 pub enum ChunkMeshGeneratorEvent {
@@ -43,7 +39,7 @@ impl ChunkMeshGenerator {
         )
     }
 
-    pub fn generate_chunk_mesh(&self, world: &World, pos: ChunkPos) -> ChunkMeshData {
+    pub fn generate_chunk_mesh(&self, world: &RenderWorld, pos: ChunkPos) -> ChunkMeshData {
         let input = ChunkMeshGeneratorInput::try_from_world(world, pos)
             .expect("Tried to mesh a chunk that does not exist in the world");
 
@@ -56,7 +52,7 @@ impl ChunkMeshGenerator {
         mesher.generate_mesh(&input)
     }
 
-    pub fn generate_chunk_mesh_async(&self, world: &World, pos: ChunkPos) {
+    pub fn generate_chunk_mesh_async(&self, world: &RenderWorld, pos: ChunkPos) {
         let input = ChunkMeshGeneratorInput::try_from_world(world, pos)
             .expect("Tried to mesh a chunk that does not exist in the world");
 

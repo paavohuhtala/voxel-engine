@@ -6,7 +6,7 @@ use engine::{
     config::config_manager::{Config, ConfigManager},
     game_loop::GameLoopTime,
 };
-use wgpu::{RenderPassDescriptor, wgt::CommandEncoderDescriptor};
+use wgpu::{InstanceFlags, RenderPassDescriptor, wgt::CommandEncoderDescriptor};
 use winit::window::Window;
 
 use crate::{
@@ -45,7 +45,10 @@ impl Renderer {
         let config = config_manager.get().read().unwrap().clone();
 
         let size = window.inner_size();
-        let instance = wgpu::Instance::default();
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            flags: InstanceFlags::DEBUG | InstanceFlags::VALIDATION,
+            ..Default::default()
+        });
         let window_clone = window.clone();
         let surface = instance.create_surface(window_clone)?;
         let adapter = instance
@@ -144,6 +147,13 @@ impl Renderer {
         }
     }
 
+    pub fn resolution(&self) -> Resolution {
+        Resolution {
+            width: self.surface_config.width,
+            height: self.surface_config.height,
+        }
+    }
+
     /// Sets both previous and current camera to the same value (no interpolation).
     /// Use when teleporting or initializing.
     pub fn set_camera_immediate(&mut self, camera: &Camera) {
@@ -151,8 +161,8 @@ impl Renderer {
     }
 
     /// Updates the camera for this frame. Call once per frame after all game updates.
-    pub fn set_camera(&mut self, camera: &Camera) {
-        self.world_renderer.set_camera(camera);
+    pub fn set_camera(&mut self, camera: &Camera, time: &GameLoopTime) {
+        self.world_renderer.set_camera(camera, time);
     }
 
     pub fn render(

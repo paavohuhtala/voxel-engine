@@ -6,16 +6,12 @@ use image::{
 };
 use wgpu::{TexelCopyBufferLayout, TexelCopyTextureInfo};
 
-use engine::{
-    assets::blocks::{BlockDatabase, BlockDatabaseEntry, BlockTextures, TextureIndices},
-    memory::pool::Pool,
-};
+use engine::assets::world_textures::WorldTextures;
 
 const MAX_TEXTURES: usize = 256;
 
 pub struct TextureManager {
     queue: wgpu::Queue,
-    texture_pool: Pool,
     array_texture: wgpu::Texture,
     sampler: wgpu::Sampler,
     view: wgpu::TextureView,
@@ -38,8 +34,6 @@ const fn get_mip_sizes() -> [u32; MIP_LAYERS] {
 
 impl TextureManager {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        let texture_pool = Pool::new(MAX_TEXTURES as u64);
-
         let texture_size = wgpu::Extent3d {
             width: TEXTURE_SIZE as u32,
             height: TEXTURE_SIZE as u32,
@@ -77,51 +71,15 @@ impl TextureManager {
             ..Default::default()
         });
 
-        let mut manager = Self {
+        Self {
             queue: queue.clone(),
-            texture_pool,
             array_texture,
             sampler,
             view,
-        };
-        manager.add_default_texture();
-        manager
-    }
-
-    fn add_default_texture(&mut self) {
-        let invalid_texture = generate_invalid_texture_checkerboard();
-        let id = self.allocate_and_upload_texture(&invalid_texture);
-        assert!(id == 0, "Default invalid texture must be at index 0");
-    }
-
-    fn load_block_textures(&mut self, block: &BlockDatabaseEntry) -> anyhow::Result<()> {
-        match block.get_textures() {
-            BlockTextures::Invisible => {
-                // No texture to load
-                return Ok(());
-            }
-            BlockTextures::Single(texture) => {
-                let texture_index = self.allocate_and_upload_texture(texture);
-                block.set_texture_indices(TextureIndices::new_single(texture_index));
-            }
-            BlockTextures::PerFace { top, bottom, side } => {
-                let top_index = self.allocate_and_upload_texture(top);
-                let bottom_index = self.allocate_and_upload_texture(bottom);
-                let side_index = self.allocate_and_upload_texture(side);
-
-                block.set_texture_indices(TextureIndices {
-                    top: top_index,
-                    bottom: bottom_index,
-                    side: side_index,
-                });
-            }
         }
-
-        Ok(())
     }
 
-    fn allocate_and_upload_texture(&mut self, image: &RgbaImage) -> u16 {
-        let texture_index = self.texture_pool.allocate().expect("Texture pool is full") as u16;
+    fn upload_texture(&mut self, texture_index: u16, image: &RgbaImage) -> u16 {
         let mipmaps = self.generate_mipmaps(image);
 
         for (mip_level, image) in mipmaps.iter().enumerate() {
@@ -167,16 +125,10 @@ impl TextureManager {
         })
     }
 
-    pub fn load_all_textures(&mut self, block_database: &BlockDatabase) -> anyhow::Result<()> {
-        for block in block_database.iter_blocks() {
-            self.load_block_textures(block)?;
+    pub fn load_all_textures(&mut self, world_textures: &WorldTextures) -> anyhow::Result<()> {
+        for (index, texture) in world_textures.textures.iter().enumerate() {
+            self.upload_texture(index as u16, texture);
         }
-
-        log::info!(
-            "Loaded all block textures. Texture pool at {}/{}",
-            self.texture_pool.used(),
-            self.texture_pool.capacity()
-        );
 
         Ok(())
     }
@@ -188,25 +140,4 @@ impl TextureManager {
     pub fn sampler(&self) -> &wgpu::Sampler {
         &self.sampler
     }
-
-    pub fn texture_capacity(&self) -> u64 {
-        self.texture_pool.capacity()
-    }
-}
-
-fn generate_invalid_texture_checkerboard() -> RgbaImage {
-    const SIZE: u32 = 16;
-    let mut img = RgbaImage::new(SIZE, SIZE);
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let is_white = ((x / 4) + (y / 4)) % 2 == 0;
-            let color = if is_white {
-                [255, 0, 255, 255] // Magenta
-            } else {
-                [0, 0, 0, 255] // Black
-            };
-            img.put_pixel(x, y, image::Rgba(color));
-        }
-    }
-    img
 }

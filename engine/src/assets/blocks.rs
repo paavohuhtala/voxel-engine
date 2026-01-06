@@ -1,13 +1,12 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::RwLock,
-};
+use std::path::PathBuf;
 
 use anyhow::Context;
-use image::RgbaImage;
 use serde::Deserialize;
 
-use crate::voxels::face::Face;
+use crate::{
+    assets::world_textures::{WorldTextureHandle, WorldTextures},
+    voxels::face::Face,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockTypeId(pub u16);
@@ -15,33 +14,18 @@ pub struct BlockTypeId(pub u16);
 pub struct BlockDatabaseEntry {
     pub id: BlockTypeId,
     pub name: String,
-    textures: BlockTextures,
-    texture_indices: RwLock<Option<TextureIndices>>,
-}
-
-impl BlockDatabaseEntry {
-    pub fn get_texture_indices(&self) -> Option<TextureIndices> {
-        self.texture_indices.read().unwrap().to_owned()
-    }
-
-    pub fn set_texture_indices(&self, indices: TextureIndices) {
-        *self.texture_indices.write().unwrap() = Some(indices);
-    }
-
-    pub fn get_textures(&self) -> &BlockTextures {
-        &self.textures
-    }
+    pub texture_indices: Option<TextureIndices>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct TextureIndices {
-    pub top: u16,
-    pub bottom: u16,
-    pub side: u16,
+    pub top: WorldTextureHandle,
+    pub bottom: WorldTextureHandle,
+    pub side: WorldTextureHandle,
 }
 
 impl TextureIndices {
-    pub fn new_single(index: u16) -> Self {
+    pub fn new_single(index: WorldTextureHandle) -> Self {
         TextureIndices {
             top: index,
             bottom: index,
@@ -51,22 +35,14 @@ impl TextureIndices {
 
     pub fn get_face_index(&self, face: Face) -> u16 {
         match face {
-            Face::Top => self.top,
-            Face::Bottom => self.bottom,
-            _ => self.side,
+            Face::Top => self.top.0,
+            Face::Bottom => self.bottom.0,
+            _ => self.side.0,
         }
     }
 }
 
-pub enum BlockTextures {
-    Invisible,
-    Single(RgbaImage),
-    PerFace {
-        top: RgbaImage,
-        bottom: RgbaImage,
-        side: RgbaImage,
-    },
-}
+pub struct TextureIndex(pub u16);
 
 #[derive(Debug, Clone, Deserialize)]
 pub enum BlockTextureDefinition {
@@ -88,13 +64,9 @@ pub struct BlockDefinition {
 
 pub struct BlockDatabase {
     blocks: Vec<BlockDatabaseEntry>,
+    // TODO: Should BlockDatabase really own WorldTextures?
+    pub world_textures: WorldTextures,
     assets_root: PathBuf,
-}
-
-impl Default for BlockDatabase {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl BlockDatabase {
@@ -111,6 +83,7 @@ impl BlockDatabase {
         BlockDatabase {
             assets_root,
             blocks: Vec::new(),
+            world_textures: WorldTextures::new(),
         }
     }
 
@@ -127,50 +100,32 @@ impl BlockDatabase {
         &mut self,
         block: BlockDefinition,
     ) -> anyhow::Result<BlockTypeId> {
-        let texture_path = self.assets_root.join("textures");
-
-        let textures: BlockTextures = match block.textures {
-            BlockTextureDefinition::Invisible => BlockTextures::Invisible,
+        let indices = match block.textures {
+            BlockTextureDefinition::Invisible => None,
             BlockTextureDefinition::Single(single) => {
-                let texture_image = Self::load_texture(&texture_path.join(single))?;
-                BlockTextures::Single(texture_image)
+                let index = self.world_textures.load_from_path_and_allocate(&single)?;
+                Some(TextureIndices::new_single(index))
             }
             BlockTextureDefinition::PerFace { top, bottom, side } => {
-                // TODO: If some of the images are the same, avoid loading them multiple times
-                let top_image = Self::load_texture(&texture_path.join(top)).with_context(|| {
-                    format!("Failed to load top texture for block '{}'", block.name)
-                })?;
-                let bottom_image =
-                    Self::load_texture(&texture_path.join(bottom)).with_context(|| {
-                        format!("Failed to load bottom texture for block '{}'", block.name)
-                    })?;
-                let side_image =
-                    Self::load_texture(&texture_path.join(side)).with_context(|| {
-                        format!("Failed to load side texture for block '{}'", block.name)
-                    })?;
-                BlockTextures::PerFace {
-                    top: top_image,
-                    bottom: bottom_image,
-                    side: side_image,
-                }
+                let top_index = self.world_textures.load_from_path_and_allocate(&top)?;
+                let bottom_index = self.world_textures.load_from_path_and_allocate(&bottom)?;
+                let side_index = self.world_textures.load_from_path_and_allocate(&side)?;
+                Some(TextureIndices {
+                    top: top_index,
+                    bottom: bottom_index,
+                    side: side_index,
+                })
             }
         };
 
         let block_entry = BlockDatabaseEntry {
             id: BlockTypeId(block.id),
             name: block.name,
-            textures,
-            texture_indices: RwLock::new(None),
+            texture_indices: indices,
         };
 
         self.blocks.push(block_entry);
         Ok(BlockTypeId(block.id))
-    }
-
-    fn load_texture(path: &Path) -> anyhow::Result<RgbaImage> {
-        let image = image::open(path)
-            .with_context(|| format!("Failed to open texture image at {}", path.display()))?;
-        Ok(image.to_rgba8())
     }
 
     pub fn load_all_blocks(&mut self) -> anyhow::Result<()> {
@@ -189,6 +144,12 @@ impl BlockDatabase {
 
     pub fn get_by_id(&self, id: BlockTypeId) -> Option<&BlockDatabaseEntry> {
         self.blocks.iter().find(|b| b.id == id)
+    }
+}
+
+impl Default for BlockDatabase {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -213,8 +174,8 @@ impl BlockDatabaseSlim {
             .blocks
             .iter()
             .map(|b| {
-                b.get_texture_indices()
-                    .unwrap_or_else(|| TextureIndices::new_single(0))
+                b.texture_indices
+                    .unwrap_or(TextureIndices::new_single(WorldTextureHandle::ERROR))
             })
             .collect::<Vec<_>>();
         BlockDatabaseSlim { blocks }
