@@ -4,7 +4,10 @@ use std::time::Instant;
 // Which is based on the classic article https://gafferongames.com/post/fix_your_timestep/
 
 pub trait Game {
+    /// Called before any updates are processed
     fn before_update(&mut self) {}
+    /// Called before rendering, after all updates are processed
+    fn before_render(&mut self, _time: &GameLoopTime) {}
     fn update(&mut self, time: &GameLoopTime) -> anyhow::Result<()>;
     fn render(&mut self, _time: &GameLoopTime) -> anyhow::Result<()> {
         Ok(())
@@ -89,6 +92,7 @@ impl<G: Game> GameLoop<G> {
             elapsed_time_s: self.running_time_s,
             blending_factor: self.blending_factor,
         };
+        self.game.before_render(&time);
         self.game.render(&time)?;
         self.number_of_renders += 1;
 

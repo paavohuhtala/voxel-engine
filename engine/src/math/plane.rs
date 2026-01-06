@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 
-#[derive(Copy, Clone, Pod, Zeroable, Debug)]
+#[derive(Copy, Clone, Pod, Zeroable, Debug, Default)]
 #[repr(C)]
 pub struct Plane {
     pub normal: Vec3,

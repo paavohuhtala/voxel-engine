@@ -1,81 +1,18 @@
-use std::{collections::HashSet, mem::size_of};
+use std::{
+    mem::size_of,
+    sync::atomic::{AtomicU8, Ordering},
+};
 
-use glam::U8Vec3;
-
-use crate::voxels::{coord::LocalPos, unpacked_chunk::UnpackedChunk, voxel::Voxel};
-
-#[derive(Default, Clone)]
-pub struct Palette {
-    pub voxel_types: Vec<Voxel>,
-}
-
-impl Palette {
-    pub fn new() -> Self {
-        Palette {
-            voxel_types: Vec::new(),
-        }
-    }
-
-    pub fn from_voxel_types(voxels: &[Voxel]) -> Self {
-        Palette {
-            voxel_types: voxels.to_vec(),
-        }
-    }
-
-    pub fn from_voxel_type_iterator<I>(iter: I) -> Self
-    where
-        I: IntoIterator<Item = Voxel>,
-    {
-        Palette {
-            voxel_types: iter.into_iter().collect(),
-        }
-    }
-
-    pub fn ensure_voxel_type(&mut self, voxel: Voxel) -> usize {
-        // If this is the first voxel type, ensure we've also defined AIR
-        if voxel != Voxel::AIR && self.voxel_types.is_empty() {
-            self.add_voxel_type(Voxel::AIR);
-        }
-
-        if let Some(index) = self.voxel_types.iter().position(|&v| v == voxel) {
-            return index;
-        }
-
-        self.add_voxel_type(voxel);
-        self.voxel_types.len() - 1
-    }
-
-    fn add_voxel_type(&mut self, voxel: Voxel) {
-        assert!(
-            self.voxel_types.len() < 2usize.pow(16),
-            "Palette cannot have more than 65536 voxel types"
-        );
-
-        self.voxel_types.push(voxel);
-    }
-
-    pub fn get_voxel_type(&self, index: usize) -> Option<Voxel> {
-        self.voxel_types.get(index).copied()
-    }
-
-    pub fn get_voxel_index(&self, voxel: Voxel) -> Option<usize> {
-        self.voxel_types.iter().position(|&v| v == voxel)
-    }
-
-    // How many bits are needed to index into the voxel_types
-    // This can be 0, which means all voxels are the same type
-    // Normaly those chunks are represented as Solid chunks,
-    // but when converting between representations this can be useful
-    pub fn get_packed_index_bits(&self) -> usize {
-        let count = self.voxel_types.len();
-
-        (count as f32).log2().ceil() as usize
-    }
-
-    pub fn approximate_size(&self) -> usize {
-        size_of::<Self>() + self.voxel_types.capacity() * size_of::<Voxel>()
-    }
-}
+use crate::{
+    mesh_generation::chunk_mesh::ChunkMeshData,
+    voxels::{
+        coord::{ChunkPos, LocalPos},
+        face::Face,
+        packed_chunk::{PackedChunk, Palette},
+        unpacked_chunk::UnpackedChunk,
+        voxel::Voxel,
+    },
+};
 
 pub const CHUNK_SIZE: u8 = 16;
 // For fast division
@@ -83,305 +20,18 @@ pub const CHUNK_SIZE_LOG2: i32 = 4;
 
 pub const CHUNK_VOLUME: usize = (CHUNK_SIZE as usize).pow(3);
 
-pub enum Chunk {
+pub enum ChunkData {
     Solid(Voxel),
     Packed(PackedChunk),
 }
 
-pub struct PackedChunk {
-    pub palette: Palette,
-    // Data is stored in YZX order
-    // Each voxel is represented by an index into the palette
-    // Voxels are packed tightly into 64-bit integers, with possibly unused bits at the end of each u64
-    pub data: Box<[u64]>,
-    pub bits_per_voxel: u8,
-    pub bit_mask: u64,
-}
-
-#[derive(Debug)]
-struct VoxelOffsets {
-    data_index: usize,
-    bit_offset: usize,
-}
-
-impl Default for PackedChunk {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PackedChunk {
-    pub fn new() -> Self {
-        PackedChunk {
-            palette: Palette::new(),
-            data: Box::new([]),
-            bits_per_voxel: 0,
-            bit_mask: 0,
-        }
-    }
-
-    pub fn new_with_palette(palette: Palette) -> Self {
-        let mut chunk = PackedChunk {
-            palette,
-            data: Box::new([]),
-            bits_per_voxel: 0,
-            bit_mask: 0,
-        };
-        chunk.reallocate_if_necessary();
-        chunk
-    }
-
-    pub fn reallocate_if_necessary(&mut self) {
-        let needed_bits = self.palette.get_packed_index_bits();
-        if needed_bits == self.bits_per_voxel as usize {
-            return;
-        }
-
-        // Repack data
-        let old_bits = self.bits_per_voxel as usize;
-        let old_data = std::mem::replace(&mut self.data, Box::new([]));
-
-        self.bits_per_voxel = needed_bits as u8;
-        self.bit_mask = (1u64 << needed_bits) - 1;
-
-        if needed_bits == 0 {
-            return;
-        }
-
-        let voxels_per_u64 = 64 / needed_bits;
-        let u64_count = CHUNK_VOLUME.div_ceil(voxels_per_u64);
-        self.data = vec![0u64; u64_count].into_boxed_slice();
-
-        // If we had data, we need to copy it over
-        if old_bits > 0 {
-            let old_voxels_per_u64 = 64 / old_bits;
-            let old_mask = (1u64 << old_bits) - 1;
-
-            for i in 0..CHUNK_VOLUME {
-                let old_u64_index = i / old_voxels_per_u64;
-                let old_sub_index = i % old_voxels_per_u64;
-                let old_bit_offset = old_sub_index * old_bits;
-                let val = (old_data[old_u64_index] >> old_bit_offset) & old_mask;
-
-                let new_u64_index = i / voxels_per_u64;
-                let new_sub_index = i % voxels_per_u64;
-                let new_bit_offset = new_sub_index * needed_bits;
-
-                self.data[new_u64_index] |= val << new_bit_offset;
-            }
-        }
-    }
-
-    fn get_storage_indices(&self, index: usize) -> VoxelOffsets {
-        let bits = self.bits_per_voxel as usize;
-        let voxels_per_u64 = 64 / bits;
-        let data_index = index / voxels_per_u64;
-        let sub_index = index % voxels_per_u64;
-        let bit_offset = sub_index * bits;
-        VoxelOffsets {
-            data_index,
-            bit_offset,
-        }
-    }
-
-    fn get_packed_index(&self, index: usize) -> u16 {
-        if self.bits_per_voxel == 0 {
-            return 0;
-        }
-
-        let offsets = self.get_storage_indices(index);
-        ((self.data[offsets.data_index] >> offsets.bit_offset) & self.bit_mask) as u16
-    }
-
-    fn set_packed_index(&mut self, index: usize, value: u16) {
-        if self.bits_per_voxel == 0 {
-            panic!("Cannot set packed index when bits_per_voxel is 0");
-        }
-
-        let offsets = self.get_storage_indices(index);
-        let mask = self.bit_mask << offsets.bit_offset;
-        let value_shifted = (value as u64 & self.bit_mask) << offsets.bit_offset;
-        self.data[offsets.data_index] = (self.data[offsets.data_index] & !mask) | value_shifted;
-    }
-
-    pub fn get_voxel(&self, coord: LocalPos) -> Option<Voxel> {
-        let index = Self::coord_to_index(coord);
-        let palette_index = self.get_packed_index(index);
-        self.palette.get_voxel_type(palette_index as usize)
-    }
-
-    pub fn set_voxel(&mut self, coord: LocalPos, voxel: Voxel) {
-        let palette_index = self.palette.ensure_voxel_type(voxel);
-        self.reallocate_if_necessary();
-        self.set_voxel_indexed(coord, palette_index as u16);
-    }
-
-    fn set_voxel_indexed(&mut self, coord: LocalPos, palette_index: u16) {
-        let index = Self::coord_to_index(coord);
-        self.set_packed_index(index, palette_index);
-    }
-
-    pub fn iter_voxels(&self) -> impl Iterator<Item = (LocalPos, Voxel)> + '_ {
-        let bits = self.bits_per_voxel as usize;
-        let voxels_per_u64 = if bits == 0 { usize::MAX } else { 64 / bits };
-        let mask = self.bit_mask;
-
-        let mut u64_index = 0;
-        let mut sub_index = 0;
-
-        let mut x = 0;
-        let mut y = 0;
-        let mut z = 0;
-
-        (0..CHUNK_VOLUME).map(move |_| {
-            let coord = LocalPos::new(x, y, z);
-
-            // Advance coordinates
-            x += 1;
-            if x == CHUNK_SIZE {
-                x = 0;
-                z += 1;
-                if z == CHUNK_SIZE {
-                    z = 0;
-                    y += 1;
-                }
-            }
-
-            let palette_index = if bits == 0 {
-                0
-            } else {
-                let bit_offset = sub_index * bits;
-                // Safety: u64_index should be within bounds if logic is correct
-                let val = ((self.data[u64_index] >> bit_offset) & mask) as u16;
-
-                sub_index += 1;
-                if sub_index >= voxels_per_u64 {
-                    sub_index = 0;
-                    u64_index += 1;
-                }
-                val
-            };
-
-            let voxel = self
-                .palette
-                .get_voxel_type(palette_index as usize)
-                .unwrap_or_default();
-            (coord, voxel)
-        })
-    }
-
-    /**
-     * Unpack the chunk into a flat vector of voxels in YZX order.
-     * More efficient than iteration, if you just need the raw data.
-     */
-    pub fn unpack(&self, voxels: &mut [Voxel]) {
-        let bits = self.bits_per_voxel as usize;
-        if bits == 0 {
-            // Fast path: all voxels are the same
-            let voxel = self.palette.get_voxel_type(0).unwrap_or_default();
-            voxels.fill(voxel);
-            return;
-        }
-
-        let voxels_per_u64 = 64 / bits;
-        let mask = self.bit_mask;
-
-        let mut index = 0;
-
-        for &word in self.data.iter() {
-            let mut current_word = word;
-            for _ in 0..voxels_per_u64 {
-                if index >= CHUNK_VOLUME {
-                    break;
-                }
-
-                let voxel = self
-                    .palette
-                    .get_voxel_type((current_word & mask) as usize)
-                    .unwrap_or_default();
-                voxels[index] = voxel;
-                current_word >>= bits;
-                index += 1;
-            }
-        }
-    }
-
-    pub fn compact(&mut self) {
-        todo!("Implement compacting the palette and remapping voxel indices");
-    }
-
-    /// Convert ChunkSpaceCoord to linear index in YZX order
-    /// Note that this isn't a direct offset into the data array, as voxels are packed
-    /// tightly into u64s.
-    pub fn coord_to_index(coord: LocalPos) -> usize {
-        let LocalPos(U8Vec3 { x, y, z }) = coord;
-        if x >= CHUNK_SIZE || y >= CHUNK_SIZE || z >= CHUNK_SIZE {
-            panic!("Voxel coordinates out of bounds: ({}, {}, {})", x, y, z);
-        }
-
-        (y as usize * CHUNK_SIZE as usize * CHUNK_SIZE as usize)
-            + (z as usize * CHUNK_SIZE as usize)
-            + x as usize
-    }
-
-    /// Convert linear index in YZX order to ChunkSpaceCoord
-    pub fn index_to_coord(index: usize) -> LocalPos {
-        if index >= CHUNK_VOLUME {
-            panic!("Voxel index out of bounds: {}", index);
-        }
-
-        let x = (index % CHUNK_SIZE as usize) as u8;
-        let z = ((index / CHUNK_SIZE as usize) % CHUNK_SIZE as usize) as u8;
-        let y = (index / (CHUNK_SIZE as usize * CHUNK_SIZE as usize)) as u8;
-
-        LocalPos(U8Vec3 { x, y, z })
-    }
-
-    pub fn pack(voxels: &[Voxel]) -> Self {
-        assert!(
-            voxels.len() == CHUNK_VOLUME,
-            "Voxel slice must have exactly {} elements",
-            CHUNK_VOLUME
-        );
-
-        // This is potentially expensive, but ensures we have unique voxel types
-        let voxel_set = voxels.iter().cloned().collect::<HashSet<_>>();
-        let palette = Palette::from_voxel_type_iterator(voxel_set);
-        let mut chunk = Self::new_with_palette(palette);
-
-        for (i, voxel) in voxels.iter().enumerate() {
-            let palette_index = chunk
-                .palette
-                .voxel_types
-                .iter()
-                .position(|&v| v == *voxel)
-                .unwrap() as u16;
-
-            chunk.set_packed_index(i, palette_index);
-        }
-
-        chunk
-    }
-
-    // Completely fill the chunk with a single voxel type
-    // This is used when converting from solid to packed representation
-    pub fn fill(&mut self, voxel: Voxel) {
-        let palette = Palette::from_voxel_types(&[voxel]);
-        *self = PackedChunk::new_with_palette(palette);
-    }
-
-    pub fn approximate_size(&self) -> usize {
-        size_of::<Self>() + self.data.len() * size_of::<u64>() + self.palette.approximate_size()
-    }
-}
-
-impl Chunk {
+impl ChunkData {
     pub fn solid(voxel: Voxel) -> Self {
-        Chunk::Solid(voxel)
+        ChunkData::Solid(voxel)
     }
 
     pub fn empty() -> Self {
-        Chunk::Packed(PackedChunk {
+        ChunkData::Packed(PackedChunk {
             palette: Palette::new(),
             data: Box::new([]),
             bits_per_voxel: 0,
@@ -390,44 +40,44 @@ impl Chunk {
     }
 
     pub fn new_with_palette(palette: Palette) -> Self {
-        Chunk::Packed(PackedChunk::new_with_palette(palette))
+        ChunkData::Packed(PackedChunk::new_with_palette(palette))
     }
 
     pub fn reallocate_if_necessary(&mut self) {
-        if let Chunk::Packed(packed) = self {
+        if let ChunkData::Packed(packed) = self {
             packed.reallocate_if_necessary();
         }
     }
 
     pub fn get_voxel(&self, coord: LocalPos) -> Option<Voxel> {
         match self {
-            Chunk::Solid(voxel) => Some(*voxel),
-            Chunk::Packed(packed) => packed.get_voxel(coord),
+            ChunkData::Solid(voxel) => Some(*voxel),
+            ChunkData::Packed(packed) => packed.get_voxel(coord),
         }
     }
 
     pub fn set_voxel(&mut self, coord: LocalPos, voxel: Voxel) {
         match self {
-            Chunk::Solid(current_voxel) if *current_voxel == voxel => {
+            ChunkData::Solid(current_voxel) if *current_voxel == voxel => {
                 // No change needed
             }
-            Chunk::Solid(_) => {
+            ChunkData::Solid(_) => {
                 // Change to packed representation
                 let packed = self.change_to_packed();
                 packed.set_voxel(coord, voxel);
             }
-            Chunk::Packed(packed) => {
+            ChunkData::Packed(packed) => {
                 packed.set_voxel(coord, voxel);
             }
         }
     }
 
     fn change_to_packed(&mut self) -> &mut PackedChunk {
-        if let Chunk::Solid(voxel) = *self {
+        if let ChunkData::Solid(voxel) = *self {
             let mut palette = Palette::new();
             palette.add_voxel_type(voxel);
 
-            *self = Chunk::Packed(PackedChunk {
+            *self = ChunkData::Packed(PackedChunk {
                 palette,
                 data: Box::new([]),
                 bits_per_voxel: 0,
@@ -436,7 +86,7 @@ impl Chunk {
 
             self.reallocate_if_necessary();
 
-            if let Chunk::Packed(packed) = self {
+            if let ChunkData::Packed(packed) = self {
                 packed
             } else {
                 unreachable!();
@@ -448,22 +98,22 @@ impl Chunk {
 
     pub fn as_packed(&self) -> Option<&PackedChunk> {
         match self {
-            Chunk::Solid(_) => None,
-            Chunk::Packed(packed) => Some(packed),
+            ChunkData::Solid(_) => None,
+            ChunkData::Packed(packed) => Some(packed),
         }
     }
 
     pub fn as_packed_mut(&mut self) -> Option<&mut PackedChunk> {
         match self {
-            Chunk::Solid(_) => None,
-            Chunk::Packed(packed) => Some(packed),
+            ChunkData::Solid(_) => None,
+            ChunkData::Packed(packed) => Some(packed),
         }
     }
 
     pub fn bits_per_voxel(&self) -> u8 {
         match self {
-            Chunk::Solid(_) => 0,
-            Chunk::Packed(packed) => {
+            ChunkData::Solid(_) => 0,
+            ChunkData::Packed(packed) => {
                 // TODO: This isn't guaranteed to be up-to-date if palette has changed without allocation
                 packed.bits_per_voxel
             }
@@ -472,47 +122,177 @@ impl Chunk {
 
     pub fn iter_voxels(&self) -> Box<dyn Iterator<Item = (LocalPos, Voxel)> + '_> {
         match self {
-            Chunk::Solid(voxel) => {
+            ChunkData::Solid(voxel) => {
                 let iter = (0..CHUNK_VOLUME).map(move |i| {
                     let coord = PackedChunk::index_to_coord(i);
                     (coord, *voxel)
                 });
                 Box::new(iter)
             }
-            Chunk::Packed(packed) => Box::new(packed.iter_voxels()),
+            ChunkData::Packed(packed) => Box::new(packed.iter_voxels()),
         }
     }
 
     pub fn approximate_size(&self) -> usize {
         match self {
-            Chunk::Solid(_) => size_of::<Self>(),
-            Chunk::Packed(packed) => size_of::<Self>() + packed.approximate_size(),
+            ChunkData::Solid(_) => size_of::<Self>(),
+            ChunkData::Packed(packed) => size_of::<Self>() + packed.approximate_size(),
         }
     }
 }
 
-impl From<PackedChunk> for Chunk {
+impl From<PackedChunk> for ChunkData {
     fn from(value: PackedChunk) -> Self {
-        Chunk::Packed(value)
+        ChunkData::Packed(value)
     }
 }
 
-impl From<&[Voxel]> for Chunk {
+impl From<&[Voxel]> for ChunkData {
     fn from(data: &[Voxel]) -> Self {
         // If all voxels are the same, return a solid chunk
         let first = data[0];
         let all_same = data.iter().all(|&v| v == first);
         if all_same {
-            Chunk::Solid(first)
+            ChunkData::Solid(first)
         } else {
-            Chunk::Packed(PackedChunk::pack(data))
+            ChunkData::Packed(PackedChunk::pack(data))
         }
     }
 }
 
-impl From<UnpackedChunk> for Chunk {
+impl From<UnpackedChunk> for ChunkData {
     fn from(value: UnpackedChunk) -> Self {
-        Chunk::from(value.voxels.as_slice())
+        ChunkData::from(value.voxels.as_slice())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChunkState {
+    WaitingForLoading,
+    Generating,
+    // TODO: Add LoadingFromDisk state here
+    Loaded,
+    // TODO: Add decoration step here
+    Meshing,
+    Ready,
+}
+
+impl ChunkState {
+    pub fn all() -> &'static [ChunkState] {
+        &[
+            ChunkState::WaitingForLoading,
+            ChunkState::Generating,
+            ChunkState::Loaded,
+            ChunkState::Meshing,
+            ChunkState::Ready,
+        ]
+    }
+}
+
+/// Contains status flags about chunk neighbors for meshing purposes.
+#[derive(Default)]
+pub struct ChunkNeighborStatus(AtomicU8);
+
+impl ChunkNeighborStatus {
+    /// Marks the neighbor in the given direction as ready.
+    /// Returns true if all neighbors are now ready.
+    pub fn set_neighbor_ready(&self, direction: Face) -> bool {
+        let mask = 1 << (direction as u8);
+        let previous = self.0.fetch_or(mask, Ordering::SeqCst);
+        (previous | mask) == 0b0011_1111
+    }
+
+    pub fn set_neighbor_bits(&self, bits: u8) -> bool {
+        let previous = self.0.fetch_or(bits, Ordering::SeqCst);
+        (previous | bits) == 0b0011_1111
+    }
+}
+
+pub struct Chunk<T: IChunkRenderState = ()> {
+    pub position: ChunkPos,
+    pub data: Option<ChunkData>,
+    // TODO: Wrap this in crossbeam::atomic::AtomicCell?
+    pub state: ChunkState,
+    pub render_state: Option<T>,
+    pub neighbor_status: ChunkNeighborStatus,
+}
+
+pub trait IChunkRenderContext: Send + Clone {
+    fn flush(&mut self, on_done: Box<dyn FnOnce() + Send>);
+}
+
+pub trait IChunkRenderState: Send + Sync + 'static {
+    type Context: IChunkRenderContext;
+    fn create_and_upload_mesh(context: &mut Self::Context, mesh_data: ChunkMeshData) -> Self;
+    fn chunk_gpu_id(&self) -> u64;
+}
+
+impl IChunkRenderContext for () {
+    fn flush(&mut self, on_done: Box<dyn FnOnce() + Send>) {
+        on_done();
+    }
+}
+
+impl IChunkRenderState for () {
+    type Context = ();
+    fn create_and_upload_mesh<'a>(_context: &mut Self::Context, _mesh_data: ChunkMeshData) -> Self {
+    }
+    fn chunk_gpu_id(&self) -> u64 {
+        0
+    }
+}
+
+impl<T: IChunkRenderState> Chunk<T> {
+    pub fn new(position: ChunkPos) -> Self {
+        Chunk {
+            position,
+            data: None,
+            state: ChunkState::WaitingForLoading,
+            render_state: None,
+            neighbor_status: ChunkNeighborStatus::default(),
+        }
+    }
+
+    pub fn from_data(position: ChunkPos, data: ChunkData) -> Self {
+        Chunk {
+            position,
+            data: Some(data),
+            state: ChunkState::Loaded,
+            render_state: None,
+            neighbor_status: ChunkNeighborStatus::default(),
+        }
+    }
+
+    pub fn set_voxel(&mut self, pos: LocalPos, voxel: Voxel) {
+        if let Some(chunk_data) = &mut self.data {
+            chunk_data.set_voxel(pos, voxel);
+        } else {
+            panic!("Tried to set voxel on chunk with no data");
+        }
+    }
+
+    pub fn get_voxel(&self, pos: LocalPos) -> Option<Voxel> {
+        if let Some(chunk_data) = &self.data {
+            chunk_data.get_voxel(pos)
+        } else {
+            None
+        }
+    }
+
+    pub fn approximate_size(&self) -> usize {
+        // This only counts CPU memory, add separate method for GPU memory
+        size_of::<Self>()
+            + match &self.data {
+                Some(data) => data.approximate_size(),
+                None => 0,
+            }
+    }
+
+    pub fn is_suitable_neighbor_for_meshing(&self) -> bool {
+        matches!(
+            self.state,
+            ChunkState::Loaded | ChunkState::Meshing | ChunkState::Ready
+        )
     }
 }
 
@@ -528,17 +308,17 @@ mod tests {
         let grass = Voxel::from_type(3);
         let watermelon = Voxel::from_type(4);
 
-        let mut chunk = Chunk::solid(air);
+        let mut chunk = ChunkData::solid(air);
         // Initially 0 bits per voxel (only air)
         assert_eq!(chunk.bits_per_voxel(), 0);
         // Representation is solid
-        assert!(matches!(chunk, Chunk::Solid(_)));
+        assert!(matches!(chunk, ChunkData::Solid(_)));
 
         // Two types -> 1 bit required
         chunk.set_voxel(LocalPos::new(0, 0, 0), stone);
         assert_eq!(chunk.bits_per_voxel(), 1);
         // And representation changed to packed
-        assert!(matches!(chunk, Chunk::Packed(_)));
+        assert!(matches!(chunk, ChunkData::Packed(_)));
 
         // Three types -> 2 bits required
         chunk.set_voxel(LocalPos::new(1, 0, 0), dirt);
@@ -562,7 +342,7 @@ mod tests {
 
     #[test]
     fn test_chunk_boundary_crossing() {
-        let mut chunk = Chunk::solid(Voxel::AIR);
+        let mut chunk = ChunkData::solid(Voxel::AIR);
         chunk.change_to_packed();
 
         // Add enough types to get 5 bits per voxel (32 types)
@@ -601,7 +381,7 @@ mod tests {
 
     #[test]
     fn test_iter_voxels_order() {
-        let mut chunk = Chunk::solid(Voxel::AIR);
+        let mut chunk = ChunkData::solid(Voxel::AIR);
 
         // Set a few voxels at known positions
         let p1 = LocalPos::new(0, 0, 0);
@@ -623,7 +403,7 @@ mod tests {
         chunk.set_voxel(p5, v5);
 
         let collected: Vec<(LocalPos, Voxel)> = match &chunk {
-            Chunk::Packed(p) => p.iter_voxels().collect(),
+            ChunkData::Packed(p) => p.iter_voxels().collect(),
             _ => panic!("Chunk should be packed"),
         };
 
@@ -655,7 +435,7 @@ mod tests {
 
     #[test]
     fn test_fill_chunk() {
-        let mut chunk = Chunk::solid(Voxel::AIR);
+        let mut chunk = ChunkData::solid(Voxel::AIR);
         let stone = Voxel::from_type(1);
 
         // Convert to packed and fill
@@ -663,7 +443,7 @@ mod tests {
         packed.fill(stone);
 
         // Verify all voxels are stone
-        if let Chunk::Packed(packed) = &chunk {
+        if let ChunkData::Packed(packed) = &chunk {
             for (_, voxel) in packed.iter_voxels() {
                 assert_eq!(voxel, stone);
             }

@@ -1,9 +1,13 @@
 use bytesize::ByteSize;
 use egui::CornerRadius;
-use engine::world::World;
-use renderer::rendering::world_renderer::WorldRenderer;
+use engine::voxels::chunk::ChunkState;
+use renderer::{renderer_types::RenderWorld, rendering::world_renderer::WorldRenderer};
 
-pub fn draw_world_stats_ui(world_renderer: &WorldRenderer, world: &World, context: &egui::Context) {
+pub fn draw_world_stats_ui(
+    world_renderer: &WorldRenderer,
+    world: &RenderWorld,
+    context: &egui::Context,
+) {
     let renderer_stats = world_renderer.get_statistics();
     let world_stats = world.get_statistics();
     let report = &renderer_stats.face_buffer_storage_report;
@@ -46,8 +50,21 @@ pub fn draw_world_stats_ui(world_renderer: &WorldRenderer, world: &World, contex
                     ui.label("");
                     ui.end_row();
 
-                    ui.label("Renderer chunks:");
-                    ui.label(format!("{}", renderer_stats.loaded_chunks));
+                    ui.label("Chunk states:");
+                    ui.end_row();
+                    for state in ChunkState::all() {
+                        let entry = world_stats
+                            .chunks_by_state
+                            .get(state)
+                            .copied()
+                            .unwrap_or_default();
+                        ui.label(format!("{:?}:", state));
+                        ui.label(format!("{}", entry));
+                        ui.end_row();
+                    }
+
+                    ui.label("");
+                    ui.label("");
                     ui.end_row();
 
                     ui.label("Chunk buffer:");

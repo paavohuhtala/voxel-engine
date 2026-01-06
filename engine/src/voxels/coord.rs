@@ -3,7 +3,7 @@ use std::ops::{Add, Sub};
 use glam::{IVec3, U8Vec3, Vec3};
 
 use crate::{
-    math::axis::Axis,
+    math::{aabb::AABB, axis::Axis},
     voxels::{
         chunk::{CHUNK_SIZE, CHUNK_SIZE_LOG2},
         face::Face,
@@ -103,6 +103,12 @@ impl ChunkPos {
     }
 
     #[inline(always)]
+    pub fn center(&self) -> Vec3 {
+        let origin = self.origin().0.as_vec3();
+        origin + Vec3::splat((CHUNK_SIZE as f32) / 2.0)
+    }
+
+    #[inline(always)]
     pub fn get_neighbor(&self, face: Face) -> ChunkPos {
         let offset = face.to_ivec3();
         ChunkPos(self.0 + offset)
@@ -117,6 +123,12 @@ impl ChunkPos {
             self.get_neighbor(Face::Front),
             self.get_neighbor(Face::Back),
         ]
+    }
+
+    pub fn get_aabb(&self) -> AABB {
+        let min = self.origin().0;
+        let max = min + IVec3::splat(CHUNK_SIZE as i32);
+        AABB::new(min.as_vec3(), max.as_vec3())
     }
 }
 
@@ -135,6 +147,12 @@ impl Add for ChunkPos {
     #[inline(always)]
     fn add(self, other: ChunkPos) -> ChunkPos {
         ChunkPos(self.0 + other.0)
+    }
+}
+
+impl From<IVec3> for ChunkPos {
+    fn from(value: IVec3) -> Self {
+        ChunkPos(value)
     }
 }
 

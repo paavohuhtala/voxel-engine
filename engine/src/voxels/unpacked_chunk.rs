@@ -3,7 +3,7 @@ use glam::U8Vec3;
 use crate::{
     math::aabb::AABB8,
     voxels::{
-        chunk::{CHUNK_SIZE, CHUNK_VOLUME, Chunk},
+        chunk::{CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkData, IChunkRenderState},
         coord::LocalPos,
         voxel::Voxel,
     },
@@ -26,9 +26,16 @@ impl UnpackedChunk {
         }
     }
 
-    pub fn try_from_chunk(chunk: &Chunk) -> UnpackedChunkResult {
-        match chunk {
-            Chunk::Solid(voxel) if *voxel == Voxel::AIR => {
+    pub fn try_from_chunk<T: IChunkRenderState>(chunk: &Chunk<T>) -> UnpackedChunkResult {
+        let Some(chunk_data) = chunk.data.as_ref() else {
+            panic!(
+                "Tried to unpack chunk at position {:?} which has no data",
+                chunk.position
+            );
+        };
+
+        match chunk_data {
+            ChunkData::Solid(voxel) if *voxel == Voxel::AIR => {
                 return UnpackedChunkResult::Empty;
             }
             _ => {}
@@ -36,11 +43,11 @@ impl UnpackedChunk {
 
         let mut unpacked_chunk = UnpackedChunk::new();
 
-        match chunk {
-            Chunk::Solid(voxel) => {
+        match chunk_data {
+            ChunkData::Solid(voxel) => {
                 unpacked_chunk.voxels.fill(*voxel);
             }
-            Chunk::Packed(packed) => {
+            ChunkData::Packed(packed) => {
                 packed.unpack(unpacked_chunk.voxels.as_mut_slice());
             }
         }

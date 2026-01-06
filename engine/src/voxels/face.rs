@@ -20,7 +20,7 @@ pub enum Face {
 }
 
 impl Face {
-    pub fn to_ivec3(&self) -> IVec3 {
+    pub fn to_ivec3(self) -> IVec3 {
         match self {
             Face::Top => IVec3::Y,
             Face::Bottom => -IVec3::Y,
@@ -31,7 +31,18 @@ impl Face {
         }
     }
 
-    pub fn all() -> [Face; 6] {
+    pub const fn opposite(self) -> Face {
+        match self {
+            Face::Top => Face::Bottom,
+            Face::Bottom => Face::Top,
+            Face::Left => Face::Right,
+            Face::Right => Face::Left,
+            Face::Front => Face::Back,
+            Face::Back => Face::Front,
+        }
+    }
+
+    pub const fn all() -> [Face; 6] {
         [
             Face::Top,
             Face::Bottom,

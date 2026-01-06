@@ -69,9 +69,17 @@ impl BufferUpdateBatcher {
         });
     }
 
-    pub fn flush(&mut self, encoder: &mut wgpu::CommandEncoder) {
+    /// Flushes pending updates to the encoder and returns the staging buffer.
+    /// The caller MUST keep the returned buffer alive until the GPU work is done.
+    pub fn flush(&mut self, encoder: &mut wgpu::CommandEncoder) -> Option<Buffer> {
+        log::info!(
+            "Flushing {} buffer updates, {} bytes ",
+            self.updates.len(),
+            self.data.len()
+        );
+
         if self.updates.is_empty() {
-            return;
+            return None;
         }
 
         let staging_buffer = self
@@ -93,5 +101,16 @@ impl BufferUpdateBatcher {
         }
 
         self.data.clear();
+        Some(staging_buffer)
+    }
+}
+
+impl Clone for BufferUpdateBatcher {
+    fn clone(&self) -> Self {
+        BufferUpdateBatcher {
+            device: self.device.clone(),
+            data: Vec::with_capacity(self.data.capacity()),
+            updates: Vec::new(),
+        }
     }
 }

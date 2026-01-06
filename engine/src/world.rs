@@ -1,71 +1,80 @@
-use std::collections::HashSet;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    chunk_loader::{ChunkLoader, ChunkLoaderEvent},
+    assets::blocks::BlockDatabaseSlim,
+    chunk_loader::{ChunkLoader, ChunkLoaderHandle},
     voxels::{
-        chunk::Chunk,
+        chunk::{Chunk, ChunkData, ChunkState, IChunkRenderState},
         coord::{ChunkPos, WorldPos},
         voxel::Voxel,
     },
     worldgen::WorldGenerator,
 };
 
-use crossbeam_channel::Receiver;
 use dashmap::DashMap;
 
-pub struct World {
-    pub chunk_loader: ChunkLoader,
-    pub chunks: DashMap<ChunkPos, Chunk>,
-    chunk_loader_receiver: Receiver<ChunkLoaderEvent>,
-
-    ready_for_meshing: HashSet<ChunkPos>,
-    ready_to_unload: HashSet<ChunkPos>,
+pub struct World<T: IChunkRenderState = ()> {
+    pub chunk_loader: ChunkLoaderHandle,
+    pub chunks: Arc<DashMap<ChunkPos, Chunk<T>>>,
     last_statistics: WorldStatistics,
 }
 
-impl World {
-    pub fn from_generator(generator: impl WorldGenerator) -> Self {
-        let chunk_loader = ChunkLoader::new(Box::new(generator), Vec::new());
-        let chunk_loader_receiver = chunk_loader.receiver();
-        World {
-            chunk_loader,
-            chunks: DashMap::new(),
-            chunk_loader_receiver,
-            ready_for_meshing: HashSet::new(),
-            ready_to_unload: HashSet::new(),
-            last_statistics: WorldStatistics {
-                total_loaded_chunks: 0,
-                approximate_memory_usage_bytes: 0,
-            },
-        }
+pub enum ChunkEvent {
+    Loaded,
+    Unloaded,
+    FinishedMeshing,
+}
+
+impl<T: IChunkRenderState + Send + Sync + 'static> World<T> {
+    pub fn from_generator(
+        generator: impl WorldGenerator,
+        block_database: Arc<BlockDatabaseSlim>,
+        render_context: T::Context,
+    ) -> Self {
+        Self::from_chunks(generator, block_database, Vec::new(), render_context)
     }
 
-    pub fn from_chunks(generator: impl WorldGenerator, chunks: Vec<(ChunkPos, Chunk)>) -> Self {
-        let chunks = chunks.into_iter().collect::<DashMap<ChunkPos, Chunk>>();
-        let initial_loaded_chunks = chunks.iter().map(|entry| *entry.key()).collect();
-        let chunk_loader = ChunkLoader::new(Box::new(generator), initial_loaded_chunks);
-        let chunk_loader_receiver = chunk_loader.receiver();
+    pub fn from_chunks(
+        generator: impl WorldGenerator,
+        block_database: Arc<BlockDatabaseSlim>,
+        chunks_vec: Vec<(ChunkPos, ChunkData)>,
+        render_context: T::Context,
+    ) -> Self {
+        let chunks_map = chunks_vec
+            .into_iter()
+            .map(|(pos, data)| (pos, Chunk::from_data(pos, data)))
+            .collect::<DashMap<ChunkPos, Chunk<T>>>();
+
+        //let initial_loaded_chunks = chunks_map.iter().map(|entry| *entry.key()).collect();
+
+        let chunks = Arc::new(chunks_map);
+        let chunk_access = chunks.clone();
+
+        let chunk_loader = ChunkLoader::start(
+            Box::new(generator),
+            block_database,
+            chunk_access,
+            render_context,
+        );
         World {
             chunk_loader,
             chunks,
-            chunk_loader_receiver,
-            ready_for_meshing: HashSet::new(),
-            ready_to_unload: HashSet::new(),
             last_statistics: WorldStatistics {
                 total_loaded_chunks: 0,
                 approximate_memory_usage_bytes: 0,
+                chunks_by_state: HashMap::new(),
             },
         }
     }
 
     pub fn set_voxel(&self, position: WorldPos, voxel: Voxel) {
         let chunk_id = position.to_chunk_pos();
-        let mut chunk = self
-            .chunks
-            .entry(chunk_id)
-            .or_insert_with(|| Chunk::Solid(Voxel::AIR));
-        let local_pos = position.to_local_pos();
-        chunk.set_voxel(local_pos, voxel);
+        self.chunks.entry(chunk_id).and_modify(|chunk| {
+            // TODO: Changes to non-existent chunks are silently ignored, is that good?
+            // If the chunk hasn't been generated yet, it will be overwritten when generation finishes
+            let local_pos = position.to_local_pos();
+            chunk.set_voxel(local_pos, voxel);
+        });
     }
 
     pub fn get_voxel(&self, position: WorldPos) -> Option<Voxel> {
@@ -75,86 +84,60 @@ impl World {
         chunk.get_voxel(local_pos)
     }
 
-    pub fn update(&mut self) {
-        self.add_generated_chunks();
-    }
+    pub fn process_loader_events(&mut self) -> bool {
+        /*const MAX_EVENTS_PER_FRAME: usize = 4096;
+        let mut events_processed = 0;
 
-    fn is_chunk_ready_for_meshing(&self, pos: ChunkPos) -> bool {
-        // A chunk is ready for meshing if it exists and all its neighbors exist
-        if !self.chunks.contains_key(&pos) {
-            return false;
-        }
+        let mut changed = false;
 
-        let neighbors = pos.get_neighbors();
+        while events_processed < MAX_EVENTS_PER_FRAME {
+            let Ok(event) = self.chunk_loader_receiver.try_recv() else {
+                break;
+            };
 
-        for neighbor_pos in neighbors {
-            if !self.chunks.contains_key(&neighbor_pos) {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    fn add_generated_chunks(&mut self) {
-        let mut added = 0;
-        let mut removed = 0;
-
-        while let Ok(event) = self.chunk_loader_receiver.try_recv() {
             match event {
-                ChunkLoaderEvent::Loaded { pos, chunk } => {
-                    added += 1;
-                    self.chunks.insert(pos, *chunk);
-
-                    // TODO: Skip meshing-related checks when running headless
-                    if self.is_chunk_ready_for_meshing(pos) {
-                        self.ready_for_meshing.insert(pos);
-                    }
-
-                    // Also check if any neighbors are now ready for meshing because of this new chunk
-                    for neighbor in pos.get_neighbors() {
-                        if self.is_chunk_ready_for_meshing(neighbor) {
-                            self.ready_for_meshing.insert(neighbor);
-                        }
-                    }
-                }
-                ChunkLoaderEvent::ShouldUnload(items) => {
-                    removed += items.len();
-                    for pos in items {
-                        self.chunks.remove(&pos);
-                        self.ready_for_meshing.remove(&pos);
-                        self.ready_to_unload.insert(pos);
+                ChunkLoaderEvent::MeshGenerated { pos, mesh } => {
+                    if let Some(mut chunk) = self.chunks.get_mut(&pos) {
+                        chunk.render_state = Some(T::create_and_upload_mesh(render_context, *mesh));
+                        chunk.state = ChunkState::Ready;
+                        changed = true;
+                    } else {
+                        log::warn!(
+                            "Received meshed chunk for position {:?} which does not exist in the world",
+                            pos
+                        );
                     }
                 }
             }
+            events_processed += 1;
         }
 
-        if added > 0 || removed > 0 {
-            log::debug!("World update: +{} -{} chunks", added, removed);
+        if changed {
             self.update_statistics();
         }
-    }
 
-    pub fn drain_chunks_ready_for_meshing(&mut self, chunk_positions: &mut Vec<ChunkPos>) {
-        chunk_positions.extend(self.ready_for_meshing.drain());
-    }
+        changed*/
 
-    pub fn drain_chunks_ready_to_unload(&mut self, chunk_positions: &mut Vec<ChunkPos>) {
-        chunk_positions.extend(self.ready_to_unload.drain());
+        false
     }
 
     fn update_statistics(&mut self) {
         let total_loaded_chunks = self.chunks.len();
-        let approximate_memory_usage_bytes: usize = self
-            .chunks
-            .iter()
-            .map(|entry| entry.value().approximate_size())
-            .sum();
+        self.last_statistics.chunks_by_state.clear();
+        let mut memory_usage_bytes: usize = 0;
 
-        self.last_statistics = WorldStatistics {
-            total_loaded_chunks,
-            approximate_memory_usage_bytes,
-        };
+        for chunk in self.chunks.iter() {
+            memory_usage_bytes += chunk.approximate_size();
+            let state = chunk.state;
+            *self
+                .last_statistics
+                .chunks_by_state
+                .entry(state)
+                .or_insert(0) += 1;
+        }
+
+        self.last_statistics.total_loaded_chunks = total_loaded_chunks;
+        self.last_statistics.approximate_memory_usage_bytes = memory_usage_bytes;
     }
 
     pub fn get_statistics(&self) -> &WorldStatistics {
@@ -165,4 +148,5 @@ impl World {
 pub struct WorldStatistics {
     pub total_loaded_chunks: usize,
     pub approximate_memory_usage_bytes: usize,
+    pub chunks_by_state: HashMap<ChunkState, usize>,
 }

@@ -23,6 +23,7 @@ impl Mixable for Camera {
             eye: self.eye.mix(&other.eye, factor),
             target: self.target.mix(&other.target, factor),
             up: self.up.mix(&other.up, factor),
+            ..Default::default()
         }
     }
 }

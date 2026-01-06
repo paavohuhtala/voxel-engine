@@ -93,6 +93,7 @@ fn unpack_aabb(packed: u32) -> AABB {
 }
 
 fn intersects_frustum(frustum: Frustum, aabb: AABB) -> bool {
+    // TODO: There is still something slightly off with this
     for (var i: u32 = 0u; i < 6u; i = i + 1u) {
         let plane = frustum.planes[i];
         let p_vertex = vec3<f32>(

@@ -2,58 +2,105 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context;
 use bytemuck::{Pod, Zeroable};
-use crossbeam_channel::Receiver;
-use glam::Vec3;
 use offset_allocator::StorageReport;
-use ordered_float::OrderedFloat;
-use rayon::prelude::*;
 
 use engine::{
-    assets::blocks::{BlockDatabase, BlockDatabaseSlim},
+    assets::blocks::BlockDatabase,
     camera::Camera,
+    chunk_loader::ChunkLoaderEvent,
     game_loop::GameLoopTime,
     math::{aabb::PackedAABB, frustum::Frustum},
-    voxels::{chunk::CHUNK_SIZE, coord::ChunkPos},
-    world::World,
-};
-use wgpu::CommandEncoder;
-
-use crate::rendering::{
-    buffer_update_batcher::BufferUpdateBatcher,
-    chunk_mesh::PackedVoxelFace,
-    chunk_mesh::{ChunkMesh, ChunkMeshData, GpuChunk},
-    limits::{FACE_BUFFER_SIZE_BYTES, MAX_GPU_CHUNKS},
-    memory::{
-        gpu_heap::GpuHeap,
-        gpu_pool::{GpuPool, GpuPoolHandle},
-        typed_buffer::GpuBuffer,
+    mesh_generation::chunk_mesh::{ChunkMeshData, PackedVoxelFace},
+    visibility::potentially_visible::PotentiallyVisibleChunks,
+    voxels::{
+        chunk::{IChunkRenderContext, IChunkRenderState},
+        coord::ChunkPos,
     },
-    mesh_generation::chunk_mesh_generator::{ChunkMeshGenerator, ChunkMeshGeneratorEvent},
-    passes::{sky::SkyPass, world_geo::WorldGeometryPass},
-    postfx::PostFxRenderer,
-    render_camera::{CameraUniform, RenderCamera},
-    resolution::Resolution,
-    texture::{DepthTexture, Texture},
-    texture_manager::TextureManager,
+};
+use wgpu::{CommandEncoder, wgt::CommandEncoderDescriptor};
+
+use crate::{
+    renderer_types::RenderWorld,
+    rendering::{
+        buffer_update_batcher::BufferUpdateBatcher,
+        chunk_mesh::{ChunkMesh, GpuChunk},
+        limits::{FACE_BUFFER_SIZE_BYTES, MAX_GPU_CHUNKS},
+        memory::{
+            gpu_heap::GpuHeap,
+            gpu_pool::{GpuPool, GpuPoolHandle},
+            typed_buffer::GpuBuffer,
+        },
+        passes::{sky::SkyPass, world_geo::WorldGeometryPass},
+        postfx::PostFxRenderer,
+        render_camera::{CameraUniform, RenderCamera},
+        resolution::Resolution,
+        texture::{DepthTexture, Texture},
+        texture_manager::TextureManager,
+    },
 };
 
-pub enum ChunkMeshState {
-    /// We are currently waiting for the chunk mesh to be generated
-    Generating,
-    /// The chunk doesn't need a mesh, because it's either completely full or completely occluded
-    Empty,
-    /// The chunk mesh is ready to be rendered
-    Finished(ChunkMesh, GpuPoolHandle<GpuChunk>),
+pub struct ChunkRenderState {
+    pub mesh: ChunkMesh,
+    pub gpu_chunk: GpuPoolHandle<GpuChunk>,
 }
 
-pub struct RenderChunk {
-    pos: ChunkPos,
-    mesh: ChunkMeshState,
+#[derive(Clone)]
+pub struct ChunkRenderContext {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pub batcher: BufferUpdateBatcher,
+    pub buffers: Arc<WorldBuffers>,
 }
 
-impl RenderChunk {
-    pub fn center(&self) -> Vec3 {
-        self.pos.origin().0.as_vec3() + Vec3::splat(CHUNK_SIZE as f32 * 0.5)
+impl IChunkRenderContext for ChunkRenderContext {
+    fn flush(&mut self, callback: Box<dyn FnOnce() + Send>) {
+        log::info!("Flushing ChunkRenderContext batcher");
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("ChunkRenderContext flush encoder"),
+            });
+        let staging_buffer = self.batcher.flush(&mut encoder);
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Keep the staging buffer alive until the GPU work is done
+        self.queue.on_submitted_work_done(move || {
+            drop(staging_buffer);
+            callback();
+        });
+    }
+}
+
+impl IChunkRenderState for ChunkRenderState {
+    type Context = ChunkRenderContext;
+
+    fn create_and_upload_mesh(context: &mut Self::Context, mesh_data: ChunkMeshData) -> Self {
+        let mesh = context
+            .buffers
+            .initialize_chunk_mesh(&mut context.batcher, &mesh_data);
+        let gpu_chunk = context
+            .buffers
+            .chunks
+            .allocate()
+            .expect("Failed to allocate chunk");
+        let aabb = PackedAABB::try_from(mesh_data.aabb).expect("Failed to pack chunk AABB");
+
+        gpu_chunk.write_data_batched(
+            &mut context.batcher,
+            &GpuChunk {
+                position: mesh.position.0.extend(0),
+                face_count: mesh_data.faces.len() as u32,
+                face_byte_offset: mesh.faces_handle.byte_offset(),
+                aabb,
+                _padding: 0,
+            },
+        );
+
+        ChunkRenderState { mesh, gpu_chunk }
+    }
+
+    fn chunk_gpu_id(&self) -> u64 {
+        self.gpu_chunk.offset()
     }
 }
 
@@ -130,26 +177,25 @@ impl WorldBuffers {
 
 pub struct WorldRenderer {
     device: wgpu::Device,
-    buffers: WorldBuffers,
-    render_chunks: HashMap<ChunkPos, RenderChunk>,
+    queue: wgpu::Queue,
+    buffers: Arc<WorldBuffers>,
     sky_pass: SkyPass,
     world_geo_pass: WorldGeometryPass,
     pub camera: RenderCamera,
     scene_texture: Texture,
     post_fx: PostFxRenderer,
     pub texture_manager: TextureManager,
-    pub mesh_generator: Arc<ChunkMeshGenerator>,
-    mesh_receiver: Receiver<ChunkMeshGeneratorEvent>,
-    batcher: BufferUpdateBatcher,
-    previous_chunk: Option<ChunkPos>,
     /// True if potentially visible chunks have changed since last frame
     /// Either the camera has moved to a new chunk, or new chunks have been generated
     chunks_changed: bool,
     chunk_ids: Vec<u32>,
+    chunk_positions: Vec<ChunkPos>,
+    id_to_index: HashMap<u32, usize>,
+    pos_to_index: HashMap<ChunkPos, usize>,
+    potentially_visible: PotentiallyVisibleChunks,
 }
 
 pub struct WorldRendererStatistics {
-    pub loaded_chunks: usize,
     pub chunk_buffer_capacity: u64,
     pub chunk_buffer_used: u64,
     pub face_buffer_capacity_bytes: u64,
@@ -171,10 +217,11 @@ impl WorldRenderer {
 
         let mut texture_manager = TextureManager::new(device, queue);
         texture_manager
-            .load_all_textures(&block_database)
+            .load_all_textures(&block_database.world_textures)
             .expect("Failed to load block materials");
 
         let world_geo_pass = WorldGeometryPass::new(device, queue, &buffers, &texture_manager);
+        let buffers = Arc::new(buffers);
 
         let scene_texture = Texture::from_descriptor(
             device,
@@ -204,142 +251,93 @@ impl WorldRenderer {
             size,
         );
 
-        // TODO: Let's hope the block database never changes
-        let block_database = BlockDatabaseSlim::from_block_database(&block_database);
-        let (mesh_generator, mesh_receiver) = ChunkMeshGenerator::new(Arc::new(block_database));
-        let mesh_generator = Arc::new(mesh_generator);
-
-        let batcher = BufferUpdateBatcher::new(device.clone(), 64 * 1024 * 1024);
-
         Self {
             device: device.clone(),
+            queue: queue.clone(),
             buffers,
-            render_chunks: HashMap::new(),
             sky_pass,
             world_geo_pass,
             camera: render_camera,
             scene_texture,
             post_fx,
             texture_manager,
-            mesh_generator,
-            mesh_receiver,
-            batcher,
-            previous_chunk: None,
             chunks_changed: true,
             chunk_ids: Vec::new(),
+            chunk_positions: Vec::new(),
+            // TODO: Reuse this with ChunkLoader
+            potentially_visible: PotentiallyVisibleChunks::new(),
+            id_to_index: HashMap::new(),
+            pos_to_index: HashMap::new(),
         }
     }
 
-    fn create_render_chunk_from_mesh(
-        batcher: &mut BufferUpdateBatcher,
-        buffers: &WorldBuffers,
-        pos: ChunkPos,
-        mesh_data: &ChunkMeshData,
-    ) -> RenderChunk {
-        let chunk_mesh = buffers.initialize_chunk_mesh(batcher, mesh_data);
-        let gpu_chunk = buffers.chunks.allocate().expect("Failed to allocate chunk");
-        let aabb = PackedAABB::try_from(mesh_data.aabb).expect("Failed to pack chunk AABB");
-
-        gpu_chunk.write_data_batched(
-            batcher,
-            &GpuChunk {
-                position: chunk_mesh.position.0.extend(0),
-                face_count: mesh_data.faces.len() as u32,
-                face_byte_offset: chunk_mesh.faces_handle.byte_offset(),
-                aabb,
-                _padding: 0,
-            },
-        );
-
-        RenderChunk {
-            pos,
-            mesh: ChunkMeshState::Finished(chunk_mesh, gpu_chunk),
+    pub fn create_chunk_render_context(&self) -> ChunkRenderContext {
+        ChunkRenderContext {
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            batcher: BufferUpdateBatcher::new(self.device.clone(), 4 * 1024 * 1024),
+            buffers: self.buffers.clone(),
         }
     }
 
-    fn update_changed_chunks(&mut self) {
-        let batcher = &mut self.batcher;
-        let buffers = &self.buffers;
-
-        while let Ok(event) = self.mesh_receiver.try_recv() {
-            match event {
-                ChunkMeshGeneratorEvent::Generated { pos, mesh } => {
-                    self.render_chunks.entry(pos).and_modify(|current_chunk| {
-                        if mesh.faces.is_empty() {
-                            current_chunk.mesh = ChunkMeshState::Empty;
-                        } else {
-                            *current_chunk =
-                                Self::create_render_chunk_from_mesh(batcher, buffers, pos, &mesh);
+    pub fn sync_with_world(&mut self, world: &mut RenderWorld) {
+        for message in world.chunk_loader.event_receiver.try_iter() {
+            match message {
+                ChunkLoaderEvent::ChunkMeshesReady(chunk_mesh_updates) => {
+                    for update in chunk_mesh_updates {
+                        if let Some(mesh_id) = update.id {
+                            log::info!(
+                                "Received meshed chunk for position {:?} with mesh ID {}",
+                                update.pos,
+                                mesh_id
+                            );
+                            let index = self.chunk_ids.len();
+                            self.chunk_ids.push(mesh_id as u32);
+                            self.chunk_positions.push(update.pos);
+                            self.id_to_index.insert(mesh_id as u32, index);
+                            self.pos_to_index.insert(update.pos, index);
                         }
-                        self.chunks_changed = true;
-                    });
-                    // Since the update was done using and_modify, if we were not waiting for this chunk, we just ignore it
+                    }
+                }
+                ChunkLoaderEvent::ChunkUnloaded { pos } => {
+                    if let Some(index_to_remove) = self.pos_to_index.remove(&pos) {
+                        let last_index = self.chunk_ids.len() - 1;
+
+                        let removed_id = self.chunk_ids[index_to_remove];
+                        self.id_to_index.remove(&removed_id);
+
+                        self.chunk_ids.swap_remove(index_to_remove);
+                        self.chunk_positions.swap_remove(index_to_remove);
+
+                        if index_to_remove != last_index {
+                            let moved_id = self.chunk_ids[index_to_remove];
+                            let moved_pos = self.chunk_positions[index_to_remove];
+                            self.id_to_index.insert(moved_id, index_to_remove);
+                            self.pos_to_index.insert(moved_pos, index_to_remove);
+                        }
+                    }
                 }
             }
         }
     }
 
-    pub fn create_all_chunks(&mut self, world: &World) {
-        log::debug!(
-            "Creating render chunks for all world chunks ({})",
-            world.chunks.len()
-        );
+    pub fn update_visibility(&mut self, world: &RenderWorld) {
+        /*if self.chunks_changed {
+            let eye = self.camera.interpolated_camera.eye;
+            let frustum = &self.camera.interpolated_camera.frustum;
+            self.potentially_visible.update_and_sort(eye, frustum);
+            self.chunk_ids.clear();
 
-        let batcher = &mut self.batcher;
-        let chunk_positions: Vec<ChunkPos> = world.chunks.iter().map(|item| *item.key()).collect();
-        let buffers = &self.buffers;
-
-        let chunk_mesh_generator = self.mesh_generator.clone();
-
-        let chunk_meshes = chunk_positions
-            .par_iter()
-            .map(|&pos| {
-                let generator = chunk_mesh_generator.clone();
-                (pos, generator.generate_chunk_mesh(world, pos))
-            })
-            .collect_vec_list();
-
-        for vec in chunk_meshes {
-            for (pos, mesh) in vec {
-                let render_chunk =
-                    Self::create_render_chunk_from_mesh(batcher, buffers, pos, &mesh);
-                self.render_chunks.insert(pos, render_chunk);
+            for chunk_pos in &self.potentially_visible.chunks {
+                if let Some(chunk) = world.chunks.get(chunk_pos)
+                    && let Some(render_state) = &chunk.render_state
+                {
+                    self.chunk_ids.push(render_state.gpu_chunk.offset() as u32);
+                }
             }
-        }
-    }
 
-    pub fn sync_with_world(&mut self, world: &mut World) {
-        self.remove_stale_chunks(world);
-        self.queue_chunks_for_meshing(world);
-    }
-
-    fn queue_chunks_for_meshing(&mut self, world: &mut World) {
-        // TODO: Reuse vec
-        let mut chunks_to_mesh = Vec::new();
-        world.drain_chunks_ready_for_meshing(&mut chunks_to_mesh);
-
-        for pos in chunks_to_mesh {
-            self.mesh_generator.generate_chunk_mesh_async(world, pos);
-            // Create a placeholder render chunk to mark that we're generating this chunk
-            self.render_chunks.insert(
-                pos,
-                RenderChunk {
-                    pos,
-                    mesh: ChunkMeshState::Generating,
-                },
-            );
-        }
-    }
-
-    fn remove_stale_chunks(&mut self, world: &mut World) {
-        let mut chunks_to_unload = Vec::new();
-        world.drain_chunks_ready_to_unload(&mut chunks_to_unload);
-
-        for pos in chunks_to_unload {
-            // TODO: Cancel generation job if still generating
-            // This has mostly the same effect, since when the job finishes, the results will be ignored
-            self.render_chunks.remove(&pos);
-        }
+            self.chunks_changed = false;
+        }*/
     }
 
     pub fn resize(&mut self, size: Resolution) {
@@ -356,41 +354,9 @@ impl WorldRenderer {
         depth_texture: &DepthTexture,
         time: &GameLoopTime,
     ) {
-        self.update_changed_chunks();
-        self.batcher.flush(encoder);
-
-        self.camera
-            .update_camera_matrices(time.blending_factor as f32);
         self.post_fx.update(time);
 
-        let eye = self.camera.eye(time.blending_factor as f32);
-
-        if self.chunks_changed {
-            let mut render_chunks = self
-                .render_chunks
-                .values()
-                .filter_map(|chunk| match &chunk.mesh {
-                    ChunkMeshState::Finished(_, handle) => Some((chunk.center(), handle.offset())),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-
-            // Sort by distance to camera
-            render_chunks.sort_unstable_by_key(|(chunk_center, _)| {
-                let distance_sq = eye.distance_squared(*chunk_center);
-                OrderedFloat(distance_sq)
-            });
-
-            self.chunk_ids.clear();
-
-            for (_, chunk_id) in &render_chunks {
-                self.chunk_ids.push(*chunk_id as u32);
-            }
-
-            self.chunks_changed = false;
-        }
-
-        let frustum = Frustum::from_inverse_view_projection(self.camera.inverse_view_projection());
+        let frustum = self.camera.interpolated_camera.frustum;
         // Update culling params
         let culling_params = CullingParams {
             frustum,
@@ -420,27 +386,16 @@ impl WorldRenderer {
     /// Use when teleporting or initializing.
     pub fn set_camera_immediate(&mut self, camera: &Camera) {
         self.camera.set_camera_immediate(camera);
-        self.update_chunk_tracking(camera);
     }
 
     /// Updates the camera for this frame. Call once per frame after all game updates.
     /// Internally manages interpolation between previous and current states.
-    pub fn set_camera(&mut self, camera: &Camera) {
-        self.camera.set_camera(camera);
-        self.update_chunk_tracking(camera);
-    }
-
-    fn update_chunk_tracking(&mut self, camera: &Camera) {
-        let current_chunk = camera.get_current_chunk();
-        if self.previous_chunk != Some(current_chunk) {
-            self.chunks_changed = true;
-            self.previous_chunk = Some(current_chunk);
-        }
+    pub fn set_camera(&mut self, camera: &Camera, time: &GameLoopTime) {
+        self.camera.set_camera(camera, time);
     }
 
     pub fn get_statistics(&self) -> WorldRendererStatistics {
         WorldRendererStatistics {
-            loaded_chunks: self.render_chunks.len(),
             chunk_buffer_capacity: self.buffers.chunks.capacity(),
             chunk_buffer_used: self.buffers.chunks.used(),
             face_buffer_capacity_bytes: self.buffers.faces.capacity_bytes() as u64,

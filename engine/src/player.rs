@@ -20,11 +20,11 @@ pub struct Player {
 
 impl Player {
     pub fn new() -> Self {
-        let camera = Camera {
-            eye: Vec3::new(64.0, 32.0, -32.0),
-            target: Vec3::new(0.0, 0.0, 0.0),
-            up: Vec3::Y,
-        };
+        let camera = Camera::new(
+            Vec3::new(64.0, 32.0, -32.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::Y,
+        );
 
         let camera_path = Spline::from_vec(vec![
             (Key::new(0.0, Vec3::new(0.0, 32.0, 0.0), Interpolation::Linear)),
@@ -45,9 +45,9 @@ impl Player {
             camera,
             is_local: true,
             camera_path,
-            //camera_mode: CameraMode::Rotate { angle: 0.0 },
+            // camera_mode: CameraMode::Rotate { angle: 0.0 },
             camera_mode: CameraMode::Path { progress: 0.0 },
-            should_move_camera: true,
+            should_move_camera: false,
         }
     }
 
@@ -83,11 +83,12 @@ impl Player {
             }
         };
 
-        self.camera = Camera {
-            eye,
-            target,
-            up: Vec3::Y,
-        };
+        self.camera.eye = eye;
+        self.camera.target = target;
+    }
+
+    pub fn before_render(&mut self, resolution: glam::Vec2) {
+        self.camera.update_matrices(resolution);
     }
 }
 

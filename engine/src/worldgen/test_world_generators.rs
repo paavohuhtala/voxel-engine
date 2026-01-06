@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use crate::{
+    assets::blocks::BlockDatabaseSlim,
     voxels::{
-        chunk::{CHUNK_SIZE, Chunk},
+        chunk::{CHUNK_SIZE, ChunkData, IChunkRenderState},
         coord::{ChunkPos, LocalPos},
         unpacked_chunk::UnpackedChunk,
         voxel::Voxel,
@@ -16,7 +19,7 @@ impl WorldGenerator for TortureTestWorldGenerator {
         TortureTestWorldGenerator
     }
 
-    fn generate_chunk(&self, chunk_pos: ChunkPos) -> Chunk {
+    fn generate_chunk(&self, chunk_pos: ChunkPos) -> ChunkData {
         // Generates a chunk filled with a test pattern, where every other voxel is filled
         let mut chunk = UnpackedChunk::new();
         let grass = Voxel::from_type(1);
@@ -36,12 +39,15 @@ impl WorldGenerator for TortureTestWorldGenerator {
             }
         }
 
-        Chunk::from(chunk)
+        ChunkData::from(chunk)
     }
 }
 
 #[allow(unused)]
-pub fn generate_torture_test_world() -> World {
+pub fn generate_torture_test_world<T: IChunkRenderState>(
+    db: Arc<BlockDatabaseSlim>,
+    render_context: T::Context,
+) -> World<T> {
     let generator = TortureTestWorldGenerator::new(0);
-    World::from_generator(generator)
+    World::from_generator(generator, db, render_context)
 }

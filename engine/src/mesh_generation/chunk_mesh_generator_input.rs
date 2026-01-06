@@ -1,14 +1,14 @@
 use anyhow::Context;
 
-use engine::{
-    voxels::{
-        border::Border,
-        coord::{ChunkPos, WorldPos},
-        face::Face,
-        unpacked_chunk::{UnpackedChunk, UnpackedChunkResult},
-        voxel::Voxel,
-    },
-    world::World,
+use dashmap::DashMap;
+
+use crate::voxels::{
+    border::Border,
+    chunk::{Chunk, IChunkRenderState},
+    coord::{ChunkPos, WorldPos},
+    face::Face,
+    unpacked_chunk::{UnpackedChunk, UnpackedChunkResult},
+    voxel::Voxel,
 };
 
 /// Contains everything from the world required to mesh a chunk,
@@ -38,8 +38,11 @@ impl ChunkMeshGeneratorInput {
         }
     }
 
-    pub fn try_from_world(world: &World, center_pos: ChunkPos) -> anyhow::Result<Option<Self>> {
-        let chunk = world.chunks.get(&center_pos).with_context(|| {
+    pub fn try_from_map<T: IChunkRenderState>(
+        chunks: &DashMap<ChunkPos, Chunk<T>>,
+        center_pos: ChunkPos,
+    ) -> anyhow::Result<Option<Self>> {
+        let chunk = chunks.get(&center_pos).with_context(|| {
             format!(
                 "Tried to create ChunkMeshGeneratorInput for non-existent chunk at position {:?}",
                 center_pos
@@ -59,7 +62,7 @@ impl ChunkMeshGeneratorInput {
 
         for (i, face) in Face::all().iter().enumerate() {
             let neighbor_pos = center_pos.get_neighbor(*face);
-            if let Some(neighbor_chunk) = world.chunks.get(&neighbor_pos) {
+            if let Some(neighbor_chunk) = chunks.get(&neighbor_pos) {
                 neighbors[i].copy_from_chunk(&neighbor_chunk);
                 if neighbors_occlude && !neighbors[i].occludes {
                     neighbors_occlude = false;
