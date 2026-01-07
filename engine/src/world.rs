@@ -14,7 +14,7 @@ use crate::{
 use dashmap::DashMap;
 
 pub struct World<T: IChunkRenderState = ()> {
-    pub chunk_loader: ChunkLoaderHandle,
+    pub chunk_loader: ChunkLoaderHandle<T>,
     pub chunks: Arc<DashMap<ChunkPos, Chunk<T>>>,
     last_statistics: WorldStatistics,
 }
@@ -82,62 +82,6 @@ impl<T: IChunkRenderState + Send + Sync + 'static> World<T> {
         let chunk = self.chunks.get(&chunk_id)?;
         let local_pos = position.to_local_pos();
         chunk.get_voxel(local_pos)
-    }
-
-    pub fn process_loader_events(&mut self) -> bool {
-        /*const MAX_EVENTS_PER_FRAME: usize = 4096;
-        let mut events_processed = 0;
-
-        let mut changed = false;
-
-        while events_processed < MAX_EVENTS_PER_FRAME {
-            let Ok(event) = self.chunk_loader_receiver.try_recv() else {
-                break;
-            };
-
-            match event {
-                ChunkLoaderEvent::MeshGenerated { pos, mesh } => {
-                    if let Some(mut chunk) = self.chunks.get_mut(&pos) {
-                        chunk.render_state = Some(T::create_and_upload_mesh(render_context, *mesh));
-                        chunk.state = ChunkState::Ready;
-                        changed = true;
-                    } else {
-                        log::warn!(
-                            "Received meshed chunk for position {:?} which does not exist in the world",
-                            pos
-                        );
-                    }
-                }
-            }
-            events_processed += 1;
-        }
-
-        if changed {
-            self.update_statistics();
-        }
-
-        changed*/
-
-        false
-    }
-
-    fn update_statistics(&mut self) {
-        let total_loaded_chunks = self.chunks.len();
-        self.last_statistics.chunks_by_state.clear();
-        let mut memory_usage_bytes: usize = 0;
-
-        for chunk in self.chunks.iter() {
-            memory_usage_bytes += chunk.approximate_size();
-            let state = chunk.state;
-            *self
-                .last_statistics
-                .chunks_by_state
-                .entry(state)
-                .or_insert(0) += 1;
-        }
-
-        self.last_statistics.total_loaded_chunks = total_loaded_chunks;
-        self.last_statistics.approximate_memory_usage_bytes = memory_usage_bytes;
     }
 
     pub fn get_statistics(&self) -> &WorldStatistics {

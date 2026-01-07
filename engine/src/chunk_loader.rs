@@ -26,8 +26,11 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub enum ChunkLoaderEvent {
-    ChunkMeshesReady(Vec<ChunkMeshUpdate>),
+pub enum ChunkLoaderEvent<T: IChunkRenderState> {
+    ChunkMeshesReady(
+        Vec<ChunkMeshUpdate>,
+        Option<<T::Context as IChunkRenderContext>::FlushResult>,
+    ),
     ChunksUnloaded(Vec<ChunkPos>),
 }
 
@@ -37,16 +40,28 @@ pub enum ChunkLoaderCommand {
 }
 
 // Used by chunk loader workers to communicate back to the chunk loader
-pub enum ChunkWorkerEvent {
-    ChunkLoaded { pos: ChunkPos },
-    ChunkReadyForMeshing { pos: ChunkPos },
-    MeshesGenerated(Vec<ChunkMeshUpdate>),
+pub enum ChunkWorkerEvent<T: IChunkRenderState> {
+    ChunkLoaded {
+        pos: ChunkPos,
+    },
+    ChunkReadyForMeshing {
+        pos: ChunkPos,
+    },
+    MeshesGenerated(
+        Vec<ChunkMeshUpdate>,
+        Option<<T::Context as IChunkRenderContext>::FlushResult>,
+    ),
 }
 
-pub trait WorldAccess<T>: Send + Sync {
+pub trait WorldAccess<T: IChunkRenderState>: Send + Sync {
     fn is_chunk_ready_for_meshing(&self, pos: ChunkPos) -> bool;
     fn create_mesh_input(&self, pos: ChunkPos) -> anyhow::Result<Option<ChunkMeshGeneratorInput>>;
-    fn insert_chunk_data(&self, pos: ChunkPos, data: ChunkData, sender: &Sender<ChunkWorkerEvent>);
+    fn insert_chunk_data(
+        &self,
+        pos: ChunkPos,
+        data: ChunkData,
+        sender: &Sender<ChunkWorkerEvent<T>>,
+    );
     fn insert_render_state(&self, pos: ChunkPos, render_state: T);
     fn remove_chunk(&self, pos: ChunkPos);
     fn unload_chunks_outside_distance(&self, center: ChunkPos, distance: u32) -> Vec<ChunkPos>;
@@ -83,7 +98,12 @@ impl<T: IChunkRenderState> WorldAccess<T> for DashMap<ChunkPos, Chunk<T>> {
         ChunkMeshGeneratorInput::try_from_map(self, pos)
     }
 
-    fn insert_chunk_data(&self, pos: ChunkPos, data: ChunkData, sender: &Sender<ChunkWorkerEvent>) {
+    fn insert_chunk_data(
+        &self,
+        pos: ChunkPos,
+        data: ChunkData,
+        sender: &Sender<ChunkWorkerEvent<T>>,
+    ) {
         self.insert(pos, Chunk::from_data(pos, data));
 
         // Mark this chunk as generated for every neighboring chunk
@@ -154,15 +174,15 @@ impl<T: IChunkRenderState> WorldAccess<T> for DashMap<ChunkPos, Chunk<T>> {
     }
 }
 
-pub struct ChunkLoaderHandle {
+pub struct ChunkLoaderHandle<T: IChunkRenderState> {
     pub command_sender: Sender<ChunkLoaderCommand>,
-    pub event_receiver: Receiver<ChunkLoaderEvent>,
+    pub event_receiver: Receiver<ChunkLoaderEvent<T>>,
     pub camera_moved_sender: Sender<()>,
     pub _thread_handle: JoinHandle<()>,
     pub camera: Arc<RwLock<Camera>>,
 }
 
-impl ChunkLoaderHandle {
+impl<T: IChunkRenderState> ChunkLoaderHandle<T> {
     pub fn notify_camera_moved(&self) {
         let _ = self.camera_moved_sender.try_send(());
     }
@@ -171,10 +191,10 @@ impl ChunkLoaderHandle {
 /// Manages loading and unloading of chunks in the world.
 /// Loading can involve generating new chunks or loading from disk.
 /// The chunk loader lives in its own thread and communicates with the main engine thread via channels.
-pub struct ChunkLoader<T> {
+pub struct ChunkLoader<T: IChunkRenderState> {
     command_receiver: Receiver<ChunkLoaderCommand>,
-    worker_event_receiver: Receiver<ChunkWorkerEvent>,
-    event_sender: Sender<ChunkLoaderEvent>,
+    worker_event_receiver: Receiver<ChunkWorkerEvent<T>>,
+    event_sender: Sender<ChunkLoaderEvent<T>>,
     previous_chunk: ChunkPos,
     world_access: Arc<dyn WorldAccess<T>>,
     camera_moved_receiver: Receiver<()>,
@@ -191,7 +211,7 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
         block_database: Arc<BlockDatabaseSlim>,
         world_access: Arc<dyn WorldAccess<T>>,
         render_context: T::Context,
-    ) -> ChunkLoaderHandle {
+    ) -> ChunkLoaderHandle<T> {
         let (command_sender, command_receiver) = crossbeam_channel::unbounded();
         let (camera_moved_sender, camera_moved_receiver) = crossbeam_channel::bounded(1);
         let (worker_event_sender, worker_event_receiver) = crossbeam_channel::unbounded();
@@ -261,11 +281,11 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
                         Ok(ChunkWorkerEvent::ChunkReadyForMeshing { pos }) => {
                             self.job_queue.push(ChunkLoaderJob::GenerateMesh(pos));
                         }
-                        Ok(ChunkWorkerEvent::MeshesGenerated(updates)) => {
+                        Ok(ChunkWorkerEvent::MeshesGenerated(updates, flush_results)) => {
                             for update in &updates {
                                 self.pending_chunks.remove(&update.pos);
                             }
-                            self.event_sender.send(ChunkLoaderEvent::ChunkMeshesReady(updates)).unwrap();
+                            self.event_sender.send(ChunkLoaderEvent::ChunkMeshesReady(updates, flush_results)).unwrap();
                         }
                         Err(_) => {
                             // Channel closed, should not happen
@@ -364,7 +384,7 @@ struct ChunkLoaderWorkerPool {
 impl ChunkLoaderWorkerPool {
     pub fn new<T: IChunkRenderState>(
         num_workers: usize,
-        worker_event_sender: Sender<ChunkWorkerEvent>,
+        worker_event_sender: Sender<ChunkWorkerEvent<T>>,
         world_generator: Arc<dyn WorldGenerator>,
         block_database: Arc<BlockDatabaseSlim>,
         chunk_access: Arc<dyn WorldAccess<T>>,
@@ -424,7 +444,7 @@ struct ChunkLoaderWorker<T: IChunkRenderState> {
     chunk_access: Arc<dyn WorldAccess<T>>,
     render_context: T::Context,
     receiver: Receiver<ChunkLoaderJob>,
-    event_sender: Sender<ChunkWorkerEvent>,
+    event_sender: Sender<ChunkWorkerEvent<T>>,
     pending_meshes: Vec<ChunkMeshUpdate>,
     last_flush: Instant,
 }
@@ -436,7 +456,7 @@ impl<T: IChunkRenderState> ChunkLoaderWorker<T> {
         chunk_access: Arc<dyn WorldAccess<T>>,
         render_context: T::Context,
         receiver: Receiver<ChunkLoaderJob>,
-        event_sender: Sender<ChunkWorkerEvent>,
+        event_sender: Sender<ChunkWorkerEvent<T>>,
     ) -> Self {
         let mesh_generator = Arc::new(GreedyMesher::new(block_database));
 
@@ -465,11 +485,13 @@ impl<T: IChunkRenderState> ChunkLoaderWorker<T> {
         let pending_meshes = std::mem::take(&mut self.pending_meshes);
         let sender = self.event_sender.clone();
 
-        self.render_context.flush(Box::new(move || {
-            sender
-                .send(ChunkWorkerEvent::MeshesGenerated(pending_meshes))
-                .unwrap();
-        }));
+        let results = self.render_context.flush();
+        sender
+            .send(ChunkWorkerEvent::MeshesGenerated(
+                pending_meshes,
+                Some(results),
+            ))
+            .unwrap();
 
         self.last_flush = Instant::now();
     }
@@ -520,10 +542,10 @@ impl<T: IChunkRenderState> ChunkLoaderWorker<T> {
                         Ok(None) => {
                             self.chunk_access.set_chunk_state(pos, ChunkState::Ready);
                             self.event_sender
-                                .send(ChunkWorkerEvent::MeshesGenerated(vec![ChunkMeshUpdate {
-                                    pos,
-                                    id: None,
-                                }]))
+                                .send(ChunkWorkerEvent::MeshesGenerated(
+                                    vec![ChunkMeshUpdate { pos, id: None }],
+                                    None,
+                                ))
                                 .unwrap();
                         }
                         Err(e) => {

@@ -1,7 +1,5 @@
 use engine::{
-    limits::{LOAD_DISTANCE, VIEW_DISTANCE},
-    mesh_generation::chunk_mesh::PackedVoxelFace,
-    voxels::chunk::CHUNK_SIZE,
+    limits::LOAD_DISTANCE, mesh_generation::chunk_mesh::PackedVoxelFace, voxels::chunk::CHUNK_SIZE,
 };
 
 // Given current view distance settings, this is the number of chunks needed to be stored in GPU memory

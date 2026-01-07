@@ -6,7 +6,7 @@ use engine::{
     config::config_manager::{Config, ConfigManager},
     game_loop::GameLoopTime,
 };
-use wgpu::{RenderPassDescriptor, wgt::CommandEncoderDescriptor};
+use wgpu::{InstanceFlags, RenderPassDescriptor, wgt::CommandEncoderDescriptor};
 use winit::window::Window;
 
 use crate::{
@@ -45,7 +45,10 @@ impl Renderer {
         let config = config_manager.get().read().unwrap().clone();
 
         let size = window.inner_size();
-        let instance = wgpu::Instance::default();
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            flags: InstanceFlags::DEBUG | InstanceFlags::VALIDATION,
+            ..Default::default()
+        });
         let window_clone = window.clone();
         let surface = instance.create_surface(window_clone)?;
         let adapter = instance

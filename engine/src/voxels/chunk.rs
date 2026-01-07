@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     mem::size_of,
     sync::atomic::{AtomicU8, Ordering},
 };
@@ -218,7 +219,8 @@ pub struct Chunk<T: IChunkRenderState = ()> {
 }
 
 pub trait IChunkRenderContext: Send + Clone {
-    fn flush(&mut self, on_done: Box<dyn FnOnce() + Send>);
+    type FlushResult: Debug + Send + 'static;
+    fn flush(&mut self) -> Self::FlushResult;
 }
 
 pub trait IChunkRenderState: Send + Sync + 'static {
@@ -228,9 +230,9 @@ pub trait IChunkRenderState: Send + Sync + 'static {
 }
 
 impl IChunkRenderContext for () {
-    fn flush(&mut self, on_done: Box<dyn FnOnce() + Send>) {
-        on_done();
-    }
+    type FlushResult = ();
+
+    fn flush(&mut self) -> Self::FlushResult {}
 }
 
 impl IChunkRenderState for () {

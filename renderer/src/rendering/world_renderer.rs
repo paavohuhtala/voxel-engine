@@ -47,13 +47,14 @@ pub struct ChunkRenderState {
 #[derive(Clone)]
 pub struct ChunkRenderContext {
     device: wgpu::Device,
-    queue: wgpu::Queue,
     pub batcher: BufferUpdateBatcher,
     pub buffers: Arc<WorldBuffers>,
 }
 
 impl IChunkRenderContext for ChunkRenderContext {
-    fn flush(&mut self, callback: Box<dyn FnOnce() + Send>) {
+    type FlushResult = (wgpu::CommandBuffer, Option<wgpu::Buffer>);
+
+    fn flush(&mut self) -> Self::FlushResult {
         log::info!("Flushing ChunkRenderContext batcher");
         let mut encoder = self
             .device
@@ -61,13 +62,7 @@ impl IChunkRenderContext for ChunkRenderContext {
                 label: Some("ChunkRenderContext flush encoder"),
             });
         let staging_buffer = self.batcher.flush(&mut encoder);
-        self.queue.submit(std::iter::once(encoder.finish()));
-
-        // Keep the staging buffer alive until the GPU work is done
-        self.queue.on_submitted_work_done(move || {
-            drop(staging_buffer);
-            callback();
-        });
+        (encoder.finish(), staging_buffer)
     }
 }
 
@@ -274,7 +269,6 @@ impl WorldRenderer {
     pub fn create_chunk_render_context(&self) -> ChunkRenderContext {
         ChunkRenderContext {
             device: self.device.clone(),
-            queue: self.queue.clone(),
             batcher: BufferUpdateBatcher::new(self.device.clone(), 4 * 1024 * 1024),
             buffers: self.buffers.clone(),
         }
@@ -283,15 +277,16 @@ impl WorldRenderer {
     pub fn sync_with_world(&mut self, world: &mut RenderWorld) {
         for message in world.chunk_loader.event_receiver.try_iter() {
             match message {
-                ChunkLoaderEvent::ChunkMeshesReady(chunk_mesh_updates) => {
+                ChunkLoaderEvent::ChunkMeshesReady(chunk_mesh_updates, flush_result) => {
+                    if let Some(result) = flush_result {
+                        let (command_buffer, staging_buffer) = result;
+                        self.queue.submit(Some(command_buffer));
+                        // Keep staging buffer alive until GPU work is done
+                        drop(staging_buffer);
+                    }
+
                     for update in chunk_mesh_updates {
                         if let Some(mesh_id) = update.id {
-                            log::info!(
-                                "Received meshed chunk for position {:?} with mesh ID {}",
-                                update.pos,
-                                mesh_id
-                            );
-
                             // If this position already has an entry, remove it first (re-mesh case)
                             if let Some(old_index) = self.pos_to_index.remove(&update.pos) {
                                 let old_id = self.chunk_ids[old_index];
