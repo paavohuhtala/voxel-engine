@@ -17,7 +17,7 @@ profiling = "1.0.17"
 # Using code from this PR, because at the time of writing winit doesn't support wgpu 0.28 yet
 # https://github.com/emilk/egui/pull/7789
 egui = { git = "https://github.com/emilk/egui.git", rev = "4a9fc7e6417b9ca838b880f2a89fd16468aece67" }
-egui-wgpu = { git = "https://github.com/emilk/egui.git", rev = "4a9fc7e6417b9ca838b880f2a89fd16468aece67", features = [
+egui-wgpu = { git = "https://github.com/emilk/egui.git", rev = "4a9fc7e6417b9ca838b880f2a89fd16468aece67", default-features = false, features = [
     "winit",
 ] }
 egui-winit = { git = "https://github.com/emilk/egui.git", rev = "4a9fc7e6417b9ca838b880f2a89fd16468aece67" }
