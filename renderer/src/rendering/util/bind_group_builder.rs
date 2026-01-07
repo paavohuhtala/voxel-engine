@@ -104,7 +104,6 @@ impl<'a> BindGroupBuilder<'a> {
         name: impl Into<String>,
         resource: wgpu::BindingResource<'a>,
         sample_type: wgpu::TextureSampleType,
-        array_size: u32,
     ) -> Self {
         self.bindings.push(BindingConfig {
             index,
@@ -113,7 +112,7 @@ impl<'a> BindGroupBuilder<'a> {
                 sample_type,
                 wgpu::TextureViewDimension::D2Array,
             ),
-            count: std::num::NonZeroU32::new(array_size),
+            count: None,
             resource,
         });
         self
