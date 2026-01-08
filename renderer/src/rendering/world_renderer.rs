@@ -2,6 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context;
 use bytemuck::{Pod, Zeroable};
+use glam::IVec3;
 use offset_allocator::StorageReport;
 
 use engine::{
@@ -11,9 +12,8 @@ use engine::{
     game_loop::GameLoopTime,
     math::{aabb::PackedAABB, frustum::Frustum},
     mesh_generation::chunk_mesh::{ChunkMeshData, PackedVoxelFace},
-    visibility::potentially_visible::PotentiallyVisibleChunks,
     voxels::{
-        chunk::{IChunkRenderContext, IChunkRenderState},
+        chunk::{ChunkState, IChunkRenderContext, IChunkRenderState},
         coord::ChunkPos,
     },
 };
@@ -30,7 +30,7 @@ use crate::{
             gpu_pool::{GpuPool, GpuPoolHandle},
             typed_buffer::GpuBuffer,
         },
-        passes::{sky::SkyPass, world_geo::WorldGeometryPass},
+        passes::{chunk_bounds::ChunkBoundsPass, sky::SkyPass, world_geo::WorldGeometryPass},
         postfx::PostFxRenderer,
         render_camera::{CameraUniform, RenderCamera},
         resolution::Resolution,
@@ -176,18 +176,15 @@ pub struct WorldRenderer {
     buffers: Arc<WorldBuffers>,
     sky_pass: SkyPass,
     world_geo_pass: WorldGeometryPass,
+    chunk_bounds_pass: ChunkBoundsPass,
     pub camera: RenderCamera,
     scene_texture: Texture,
     post_fx: PostFxRenderer,
     pub texture_manager: TextureManager,
-    /// True if potentially visible chunks have changed since last frame
-    /// Either the camera has moved to a new chunk, or new chunks have been generated
-    chunks_changed: bool,
-    chunk_ids: Vec<u32>,
-    chunk_positions: Vec<ChunkPos>,
-    id_to_index: HashMap<u32, usize>,
-    pos_to_index: HashMap<ChunkPos, usize>,
-    potentially_visible: PotentiallyVisibleChunks,
+    /// Maps chunk positions to their GPU chunk IDs for rendering
+    rendered_chunks: HashMap<ChunkPos, u32>,
+    /// Whether to show chunk boundary wireframes for debugging
+    pub show_chunk_bounds: bool,
 }
 
 pub struct WorldRendererStatistics {
@@ -216,6 +213,7 @@ impl WorldRenderer {
             .expect("Failed to load block materials");
 
         let world_geo_pass = WorldGeometryPass::new(device, queue, &buffers, &texture_manager);
+        let chunk_bounds_pass = ChunkBoundsPass::new(device, &render_camera.uniform_buffer);
         let buffers = Arc::new(buffers);
 
         let scene_texture = Texture::from_descriptor(
@@ -252,17 +250,14 @@ impl WorldRenderer {
             buffers,
             sky_pass,
             world_geo_pass,
+            chunk_bounds_pass,
             camera: render_camera,
             scene_texture,
             post_fx,
             texture_manager,
-            chunks_changed: true,
-            chunk_ids: Vec::new(),
-            chunk_positions: Vec::new(),
-            // TODO: Reuse this with ChunkLoader
-            potentially_visible: PotentiallyVisibleChunks::new(),
-            id_to_index: HashMap::new(),
-            pos_to_index: HashMap::new(),
+            rendered_chunks: HashMap::new(),
+            // Initialize with empty vecs for a few frames of buffer retention
+            show_chunk_bounds: false,
         }
     }
 
@@ -274,86 +269,40 @@ impl WorldRenderer {
         }
     }
 
-    pub fn sync_with_world(&mut self, world: &mut RenderWorld) {
+    pub fn sync_with_world(&mut self, world: &RenderWorld) {
         for message in world.chunk_loader.event_receiver.try_iter() {
             match message {
                 ChunkLoaderEvent::ChunkMeshesReady(chunk_mesh_updates, flush_result) => {
                     if let Some(result) = flush_result {
-                        let (command_buffer, staging_buffer) = result;
+                        let (command_buffer, _staging_buffer) = result;
                         self.queue.submit(Some(command_buffer));
-                        // Keep staging buffer alive until GPU work is done
-                        drop(staging_buffer);
                     }
 
                     for update in chunk_mesh_updates {
+                        // Skip chunks that were unloaded while waiting for flush
+                        if update.handle.state() == ChunkState::Unloaded {
+                            continue;
+                        }
+
                         if let Some(mesh_id) = update.id {
-                            // If this position already has an entry, remove it first (re-mesh case)
-                            if let Some(old_index) = self.pos_to_index.remove(&update.pos) {
-                                let old_id = self.chunk_ids[old_index];
-                                self.id_to_index.remove(&old_id);
-
-                                let last_index = self.chunk_ids.len() - 1;
-                                self.chunk_ids.swap_remove(old_index);
-                                self.chunk_positions.swap_remove(old_index);
-
-                                // Update moved element's index if we didn't remove the last one
-                                if old_index != last_index {
-                                    let moved_id = self.chunk_ids[old_index];
-                                    let moved_pos = self.chunk_positions[old_index];
-                                    self.id_to_index.insert(moved_id, old_index);
-                                    self.pos_to_index.insert(moved_pos, old_index);
-                                }
-                            }
-
-                            let index = self.chunk_ids.len();
-                            self.chunk_ids.push(mesh_id as u32);
-                            self.chunk_positions.push(update.pos);
-                            self.id_to_index.insert(mesh_id as u32, index);
-                            self.pos_to_index.insert(update.pos, index);
+                            // Insert or replace the chunk's GPU ID
+                            self.rendered_chunks
+                                .insert(update.handle.pos, mesh_id as u32);
+                            update.handle.set_state(ChunkState::Ready);
+                        } else {
+                            // Empty chunk - remove from rendering if it was there
+                            self.rendered_chunks.remove(&update.handle.pos);
+                            update.handle.set_state(ChunkState::ReadyEmpty);
                         }
                     }
                 }
                 ChunkLoaderEvent::ChunksUnloaded(positions) => {
                     for pos in positions {
-                        if let Some(index_to_remove) = self.pos_to_index.remove(&pos) {
-                            let last_index = self.chunk_ids.len() - 1;
-
-                            let removed_id = self.chunk_ids[index_to_remove];
-                            self.id_to_index.remove(&removed_id);
-
-                            self.chunk_ids.swap_remove(index_to_remove);
-                            self.chunk_positions.swap_remove(index_to_remove);
-
-                            if index_to_remove != last_index {
-                                let moved_id = self.chunk_ids[index_to_remove];
-                                let moved_pos = self.chunk_positions[index_to_remove];
-                                self.id_to_index.insert(moved_id, index_to_remove);
-                                self.pos_to_index.insert(moved_pos, index_to_remove);
-                            }
-                        }
+                        self.rendered_chunks.remove(&pos);
                     }
                 }
             }
         }
-    }
-
-    pub fn update_visibility(&mut self, world: &RenderWorld) {
-        /*if self.chunks_changed {
-            let eye = self.camera.interpolated_camera.eye;
-            let frustum = &self.camera.interpolated_camera.frustum;
-            self.potentially_visible.update_and_sort(eye, frustum);
-            self.chunk_ids.clear();
-
-            for chunk_pos in &self.potentially_visible.chunks {
-                if let Some(chunk) = world.chunks.get(chunk_pos)
-                    && let Some(render_state) = &chunk.render_state
-                {
-                    self.chunk_ids.push(render_state.gpu_chunk.offset() as u32);
-                }
-            }
-
-            self.chunks_changed = false;
-        }*/
     }
 
     pub fn resize(&mut self, size: Resolution) {
@@ -372,16 +321,19 @@ impl WorldRenderer {
     ) {
         self.post_fx.update(time);
 
+        // Collect chunk IDs for rendering
+        let chunk_ids: Vec<u32> = self.rendered_chunks.values().copied().collect();
+
         let frustum = self.camera.interpolated_camera.frustum;
         // Update culling params
         let culling_params = CullingParams {
             frustum,
-            input_chunk_count: self.chunk_ids.len() as u32,
+            input_chunk_count: chunk_ids.len() as u32,
             _padding: [0; 3],
         };
         // Perform culling pass
         self.world_geo_pass
-            .cull_chunks(encoder, &culling_params, &self.chunk_ids);
+            .cull_chunks(encoder, &culling_params, &chunk_ids);
 
         // Render sky
         self.sky_pass.render(encoder, &self.scene_texture.view);
@@ -393,6 +345,16 @@ impl WorldRenderer {
             depth_texture,
             culling_params.input_chunk_count,
         );
+
+        // Render chunk bounds wireframes if enabled
+        if self.show_chunk_bounds {
+            let chunk_positions: Vec<IVec3> =
+                self.rendered_chunks.keys().map(|pos| pos.0).collect();
+            self.chunk_bounds_pass
+                .update_chunks(&self.queue, &chunk_positions);
+            self.chunk_bounds_pass
+                .render(encoder, &self.scene_texture.view, depth_texture);
+        }
 
         // Render PostFX
         self.post_fx.render(encoder, view);
@@ -417,5 +379,10 @@ impl WorldRenderer {
             face_buffer_capacity_bytes: self.buffers.faces.capacity_bytes() as u64,
             face_buffer_storage_report: self.buffers.faces.storage_report(),
         }
+    }
+
+    /// Toggle the visibility of chunk boundary wireframes for debugging
+    pub fn toggle_chunk_bounds(&mut self) {
+        self.show_chunk_bounds = !self.show_chunk_bounds;
     }
 }

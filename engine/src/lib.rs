@@ -26,6 +26,7 @@ pub mod player;
 pub mod visibility;
 pub mod voxels;
 pub mod world;
+pub mod world_stats;
 pub mod worldgen;
 
 pub struct EngineContext<T: IChunkRenderState = ()> {

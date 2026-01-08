@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
     assets::blocks::BlockDatabaseSlim,
@@ -8,6 +8,7 @@ use crate::{
         coord::{ChunkPos, WorldPos},
         voxel::Voxel,
     },
+    world_stats::{CHUNKS_BY_STATE, WorldStatistics},
     worldgen::WorldGenerator,
 };
 
@@ -16,7 +17,7 @@ use dashmap::DashMap;
 pub struct World<T: IChunkRenderState = ()> {
     pub chunk_loader: ChunkLoaderHandle<T>,
     pub chunks: Arc<DashMap<ChunkPos, Chunk<T>>>,
-    last_statistics: WorldStatistics,
+    statistics: WorldStatistics,
 }
 
 pub enum ChunkEvent {
@@ -37,15 +38,21 @@ impl<T: IChunkRenderState + Send + Sync + 'static> World<T> {
     pub fn from_chunks(
         generator: impl WorldGenerator,
         block_database: Arc<BlockDatabaseSlim>,
-        chunks_vec: Vec<(ChunkPos, ChunkData)>,
+        initial_chunks: Vec<(ChunkPos, ChunkData)>,
         render_context: T::Context,
     ) -> Self {
-        let chunks_map = chunks_vec
+        let statistics = WorldStatistics::new();
+        CHUNKS_BY_STATE.increment_by(ChunkState::Loaded, initial_chunks.len() as u32);
+
+        let initial_chunk_positions = initial_chunks
+            .iter()
+            .map(|(pos, _)| *pos)
+            .collect::<Vec<_>>();
+
+        let chunks_map = initial_chunks
             .into_iter()
             .map(|(pos, data)| (pos, Chunk::from_data(pos, data)))
             .collect::<DashMap<ChunkPos, Chunk<T>>>();
-
-        //let initial_loaded_chunks = chunks_map.iter().map(|entry| *entry.key()).collect();
 
         let chunks = Arc::new(chunks_map);
         let chunk_access = chunks.clone();
@@ -56,15 +63,13 @@ impl<T: IChunkRenderState + Send + Sync + 'static> World<T> {
             chunk_access,
             render_context,
         );
-        World {
+        let world = World {
             chunk_loader,
             chunks,
-            last_statistics: WorldStatistics {
-                total_loaded_chunks: 0,
-                approximate_memory_usage_bytes: 0,
-                chunks_by_state: HashMap::new(),
-            },
-        }
+            statistics,
+        };
+        world.update_neighbors_for_chunks(initial_chunk_positions.into_iter());
+        world
     }
 
     pub fn set_voxel(&self, position: WorldPos, voxel: Voxel) {
@@ -85,12 +90,32 @@ impl<T: IChunkRenderState + Send + Sync + 'static> World<T> {
     }
 
     pub fn get_statistics(&self) -> &WorldStatistics {
-        &self.last_statistics
+        &self.statistics
     }
-}
 
-pub struct WorldStatistics {
-    pub total_loaded_chunks: usize,
-    pub approximate_memory_usage_bytes: usize,
-    pub chunks_by_state: HashMap<ChunkState, usize>,
+    pub fn update(&mut self) {
+        self.statistics.total_chunks = self.chunks.len();
+    }
+
+    /// Sets neighbor bits for each provided chunk position.
+    /// Slow, only run when world loads / is generated for the first time.
+    fn update_neighbors_for_chunks(&self, positions: impl Iterator<Item = ChunkPos>) {
+        for pos in positions {
+            let mut neighbor_mask = 0u8;
+            // Neighbors are iterated in Face order, so we can use the index as the bit position
+            for (i, neighbor_pos) in pos.get_neighbors().iter().enumerate() {
+                let neighbor_is_loaded = self
+                    .chunks
+                    .get(neighbor_pos)
+                    .map(|c| c.is_suitable_neighbor_for_meshing())
+                    .unwrap_or(false);
+                if neighbor_is_loaded {
+                    neighbor_mask |= 1 << i;
+                }
+            }
+            if let Some(chunk) = self.chunks.get(&pos) {
+                chunk.neighbor_state.set_neighbor_bits(neighbor_mask);
+            }
+        }
+    }
 }

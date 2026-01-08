@@ -66,7 +66,8 @@ impl Player {
 
                 self.camera_mode = CameraMode::Path { progress };
 
-                let eye = self.camera_path.clamped_sample(progress).unwrap();
+                let eye =
+                    self.camera_path.clamped_sample(progress).unwrap() + Vec3::new(0.0, 100.0, 0.0);
                 let target = self.camera_path.clamped_sample(progress + 1.0).unwrap();
 
                 (eye, target)

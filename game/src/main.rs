@@ -1,8 +1,4 @@
-use engine::{
-    config::config_manager::Config,
-    init_engine,
-    worldgen::{generate_noise_world, generate_torture_test_world},
-};
+use engine::{config::config_manager::Config, init_engine, worldgen::generate_noise_world};
 use winit::event_loop::{ControlFlow, EventLoop};
 
 use crate::{application::Application, config::ClientConfig};
@@ -25,7 +21,7 @@ fn main() -> anyhow::Result<()> {
         context,
         client_config,
         Box::new(|block_database, render_context| {
-            generate_noise_world(4, block_database, render_context)
+            generate_noise_world(0, block_database, render_context)
         }),
     );
 

@@ -1,8 +1,13 @@
 use std::{
     fmt::Debug,
     mem::size_of,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
 };
+
+use crossbeam::atomic::AtomicCell;
 
 use crate::{
     mesh_generation::chunk_mesh::ChunkMeshData,
@@ -13,6 +18,7 @@ use crate::{
         unpacked_chunk::UnpackedChunk,
         voxel::Voxel,
     },
+    world_stats::CHUNKS_BY_STATE,
 };
 
 pub const CHUNK_SIZE: u8 = 16;
@@ -167,45 +173,84 @@ impl From<UnpackedChunk> for ChunkData {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ChunkState {
-    WaitingForLoading,
+    /// Chunk has been initialized but only contains flags
+    Initial = 0,
+    /// Chunk is queued for world generation
+    InGenerationQueue,
+    /// Chunk is being generated
     Generating,
     // TODO: Add LoadingFromDisk state here
+    // TODO: Add StaleMesh state here
+    /// Chunk has been generated and voxel data is available
     Loaded,
     // TODO: Add decoration step here
+    /// Chunk is queued for meshing
+    InMeshingQueue,
+    /// Chunk is being meshed
     Meshing,
+    /// Chunk mesh is finished, but is currently waiting for flush to renderer
+    WaitingForRendererFlush,
+    /// Chunk is ready to render
     Ready,
+    /// Chunk is ready to render, but has no voxel data.
+    /// The chunk contains only air, or it's fully occluded by neighboring chunks.
+    ReadyEmpty,
+    // TODO: Add separate ReadyOccluded state here
+    /// Chunk has been unloaded. This is a terminal state - any further state transitions are ignored.
+    /// This state is not tracked in statistics.
+    Unloaded,
 }
 
 impl ChunkState {
-    pub fn all() -> &'static [ChunkState] {
+    pub const TOTAL_STATES: usize = 10;
+
+    pub const fn all() -> &'static [ChunkState] {
         &[
-            ChunkState::WaitingForLoading,
+            ChunkState::Initial,
+            ChunkState::InGenerationQueue,
             ChunkState::Generating,
             ChunkState::Loaded,
+            ChunkState::InMeshingQueue,
             ChunkState::Meshing,
+            ChunkState::WaitingForRendererFlush,
             ChunkState::Ready,
+            ChunkState::ReadyEmpty,
+            ChunkState::Unloaded,
         ]
     }
 }
 
-/// Contains status flags about chunk neighbors for meshing purposes.
+/// Contains a bit mask representing which neighboring chunks have been generated.
 #[derive(Default)]
-pub struct ChunkNeighborStatus(AtomicU8);
+pub struct ChunkNeighborState(AtomicU8);
 
-impl ChunkNeighborStatus {
+impl ChunkNeighborState {
+    const ALL_NEIGHBORS_MASK: u8 = 0b0011_1111;
+
     /// Marks the neighbor in the given direction as ready.
-    /// Returns true if all neighbors are now ready.
+    /// Returns true if all neighbors are now ready (and this call set the final bit).
     pub fn set_neighbor_ready(&self, direction: Face) -> bool {
         let mask = 1 << (direction as u8);
         let previous = self.0.fetch_or(mask, Ordering::SeqCst);
-        (previous | mask) == 0b0011_1111
+        (previous | mask) == Self::ALL_NEIGHBORS_MASK
     }
 
+    /// Sets multiple neighbor bits at once.
+    /// Returns true if all neighbors are now ready (and this call completed the mask).
     pub fn set_neighbor_bits(&self, bits: u8) -> bool {
         let previous = self.0.fetch_or(bits, Ordering::SeqCst);
-        (previous | bits) == 0b0011_1111
+        (previous | bits) == Self::ALL_NEIGHBORS_MASK
+    }
+
+    pub fn is_ready_for_meshing(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == Self::ALL_NEIGHBORS_MASK
+    }
+
+    pub fn load(&self) -> u8 {
+        self.0.load(Ordering::SeqCst)
     }
 }
 
@@ -213,9 +258,48 @@ pub struct Chunk<T: IChunkRenderState = ()> {
     pub position: ChunkPos,
     pub data: Option<ChunkData>,
     // TODO: Wrap this in crossbeam::atomic::AtomicCell?
-    pub state: ChunkState,
+    pub state: Arc<AtomicCell<ChunkState>>,
     pub render_state: Option<T>,
-    pub neighbor_status: ChunkNeighborStatus,
+    pub neighbor_state: Arc<ChunkNeighborState>,
+}
+
+#[derive(Clone)]
+pub struct ChunkHandle {
+    pub pos: ChunkPos,
+    state: Arc<AtomicCell<ChunkState>>,
+    pub neighbor_state: Arc<ChunkNeighborState>,
+}
+
+impl Debug for ChunkHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChunkHandle")
+            .field("pos", &self.pos)
+            .field("state", &self.state.load())
+            .finish()
+    }
+}
+
+impl ChunkHandle {
+    pub fn state(&self) -> ChunkState {
+        self.state.load()
+    }
+
+    /// Sets the state of the chunk and updates the global statistics.
+    /// If the chunk has already been unloaded, this is a no-op.
+    pub fn set_state(&self, new_state: ChunkState) {
+        loop {
+            let old_state = self.state.load();
+            if old_state == ChunkState::Unloaded {
+                // Chunk was unloaded, ignore any further state transitions
+                return;
+            }
+            if self.state.compare_exchange(old_state, new_state).is_ok() {
+                CHUNKS_BY_STATE.transition(old_state, new_state);
+                return;
+            }
+            // Another thread changed the state, retry
+        }
+    }
 }
 
 pub trait IChunkRenderContext: Send + Clone {
@@ -246,22 +330,26 @@ impl IChunkRenderState for () {
 
 impl<T: IChunkRenderState> Chunk<T> {
     pub fn new(position: ChunkPos) -> Self {
+        CHUNKS_BY_STATE.increment(ChunkState::Initial);
+
         Chunk {
             position,
             data: None,
-            state: ChunkState::WaitingForLoading,
+            state: Arc::new(AtomicCell::new(ChunkState::Initial)),
             render_state: None,
-            neighbor_status: ChunkNeighborStatus::default(),
+            neighbor_state: Arc::default(),
         }
     }
 
     pub fn from_data(position: ChunkPos, data: ChunkData) -> Self {
+        CHUNKS_BY_STATE.increment(ChunkState::Loaded);
+
         Chunk {
             position,
             data: Some(data),
-            state: ChunkState::Loaded,
+            state: Arc::new(AtomicCell::new(ChunkState::Loaded)),
             render_state: None,
-            neighbor_status: ChunkNeighborStatus::default(),
+            neighbor_state: Arc::default(),
         }
     }
 
@@ -291,10 +379,37 @@ impl<T: IChunkRenderState> Chunk<T> {
     }
 
     pub fn is_suitable_neighbor_for_meshing(&self) -> bool {
-        matches!(
-            self.state,
-            ChunkState::Loaded | ChunkState::Meshing | ChunkState::Ready
-        )
+        let state = self.state.load();
+        state >= ChunkState::Loaded && state < ChunkState::Unloaded
+    }
+
+    pub fn handle(&self) -> ChunkHandle {
+        ChunkHandle {
+            pos: self.position,
+            state: self.state.clone(),
+            neighbor_state: self.neighbor_state.clone(),
+        }
+    }
+
+    /// Marks the chunk as unloaded and decrements the statistics for the current state.
+    /// This uses compare-exchange to prevent race conditions with set_state on handles.
+    pub fn before_unload(&self) {
+        loop {
+            let old_state = self.state.load();
+            if old_state == ChunkState::Unloaded {
+                // Already unloaded
+                return;
+            }
+            if self
+                .state
+                .compare_exchange(old_state, ChunkState::Unloaded)
+                .is_ok()
+            {
+                CHUNKS_BY_STATE.decrement(old_state);
+                return;
+            }
+            // Another thread changed the state, retry
+        }
     }
 }
 

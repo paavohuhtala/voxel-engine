@@ -1,6 +1,6 @@
 use bytesize::ByteSize;
 use egui::CornerRadius;
-use engine::voxels::chunk::ChunkState;
+use engine::{voxels::chunk::ChunkState, world_stats::CHUNKS_BY_STATE};
 use renderer::{renderer_types::RenderWorld, rendering::world_renderer::WorldRenderer};
 
 pub fn draw_world_stats_ui(
@@ -37,7 +37,7 @@ pub fn draw_world_stats_ui(
                 .striped(true)
                 .show(ui, |ui| {
                     ui.label("Loaded chunks:");
-                    ui.label(format!("{}", world_stats.total_loaded_chunks));
+                    ui.label(format!("{}", world_stats.total_chunks));
                     ui.end_row();
 
                     ui.label("World memory:");
@@ -53,11 +53,7 @@ pub fn draw_world_stats_ui(
                     ui.label("Chunk states:");
                     ui.end_row();
                     for state in ChunkState::all() {
-                        let entry = world_stats
-                            .chunks_by_state
-                            .get(state)
-                            .copied()
-                            .unwrap_or_default();
+                        let entry = CHUNKS_BY_STATE.get(*state);
                         ui.label(format!("{:?}:", state));
                         ui.label(format!("{}", entry));
                         ui.end_row();

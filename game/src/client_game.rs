@@ -77,9 +77,8 @@ impl Game for ClientGame {
             return Ok(());
         };
 
-        if let Some(world) = &mut self.ctx.world {
+        if let Some(world) = &self.ctx.world {
             renderer.world_renderer.sync_with_world(world);
-            renderer.world_renderer.update_visibility(world);
         }
 
         let egui_renderer = &mut self.egui;
@@ -210,6 +209,10 @@ impl ClientGame {
             (KeyCode::F4, ElementState::Pressed) => {
                 let world_renderer = &mut self.renderer.as_mut().unwrap().world_renderer;
                 world_renderer.camera.toggle_face_colors();
+            }
+            (KeyCode::F5, ElementState::Pressed) => {
+                let world_renderer = &mut self.renderer.as_mut().unwrap().world_renderer;
+                world_renderer.toggle_chunk_bounds();
             }
             _ => {}
         }
