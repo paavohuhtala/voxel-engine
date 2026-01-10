@@ -21,7 +21,12 @@ use engine::{
 use crate::{
     client_types::ClientEngineContext,
     config::ClientConfig,
-    egui::{egui_instance::EguiInstance, world_stats::draw_world_stats_ui},
+    egui::{
+        chunk_inspector::{ChunkInspectorState, draw_chunk_inspector_ui},
+        egui_instance::EguiInstance,
+        timeline::draw_timeline,
+        world_stats::draw_world_stats_ui,
+    },
     fps_counter::FpsCounter,
 };
 
@@ -32,6 +37,7 @@ pub struct ClientGame {
     pub ctx: ClientEngineContext,
     client_config: ConfigManager<ClientConfig>,
     fps_counter: FpsCounter,
+    chunk_inspector: ChunkInspectorState,
 }
 
 impl Game for ClientGame {
@@ -119,6 +125,7 @@ impl ClientGame {
             ctx: engine_context,
             client_config,
             fps_counter: FpsCounter::new(),
+            chunk_inspector: ChunkInspectorState::default(),
         }
     }
 
@@ -127,11 +134,13 @@ impl ClientGame {
     }
 
     fn draw_egui(&mut self) {
+        let player = &mut self.ctx.player;
         let Some(egui_renderer) = &mut self.egui else {
             return;
         };
 
         self.fps_counter.draw_ui(egui_renderer.ctx());
+        draw_timeline(player, egui_renderer.ctx());
 
         if let Some(world) = &self.ctx.world {
             draw_world_stats_ui(
@@ -139,6 +148,17 @@ impl ClientGame {
                 world,
                 egui_renderer.ctx(),
             );
+
+            if let Some(renderer) = &mut self.renderer {
+                let resolution = renderer.resolution();
+                draw_chunk_inspector_ui(
+                    &mut self.chunk_inspector,
+                    &mut renderer.world_renderer,
+                    world,
+                    egui_renderer.ctx(),
+                    resolution,
+                );
+            }
         }
     }
 

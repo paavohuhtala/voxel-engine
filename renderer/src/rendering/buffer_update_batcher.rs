@@ -72,7 +72,7 @@ impl BufferUpdateBatcher {
     /// Flushes pending updates to the encoder and returns the staging buffer.
     /// The caller MUST keep the returned buffer alive until the GPU work is done.
     pub fn flush(&mut self, encoder: &mut wgpu::CommandEncoder) -> Option<Buffer> {
-        log::info!(
+        log::debug!(
             "Flushing {} buffer updates, {} bytes ",
             self.updates.len(),
             self.data.len()

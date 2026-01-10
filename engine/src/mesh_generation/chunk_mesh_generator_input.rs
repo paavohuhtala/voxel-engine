@@ -1,15 +1,44 @@
-use anyhow::Context;
-
 use dashmap::DashMap;
+use thiserror::Error;
 
 use crate::voxels::{
     border::Border,
-    chunk::{Chunk, IChunkRenderState},
+    chunk::{Chunk, ChunkState, IChunkRenderState},
     coord::{ChunkPos, WorldPos},
     face::Face,
     unpacked_chunk::{UnpackedChunk, UnpackedChunkResult},
     voxel::Voxel,
 };
+
+// Non-critical errors that can occur during meshing
+#[derive(Error, Debug)]
+pub enum MeshGeneratorWarning {
+    #[error("Tried to mesh chunk at position {position:?} which is not present in the world")]
+    ChunkMissing { position: ChunkPos },
+    #[error(
+        "Tried to mesh chunk at position {position:?} but neighbor at {neighbor_pos:?} is missing"
+    )]
+    NeighborMissing {
+        position: ChunkPos,
+        neighbor_pos: ChunkPos,
+    },
+    #[error(
+        "Tried to mesh chunk at position {position:?} but neighbor at {neighbor_pos:?} is in invalid state: {state:?}"
+    )]
+    NeighborInInvalidState {
+        position: ChunkPos,
+        neighbor_pos: ChunkPos,
+        state: ChunkState,
+    },
+}
+
+#[derive(Error, Debug)]
+pub enum MeshGeneratorInputError {
+    #[error("Warning occurred during mesh generation: {0}. Job is removed from queue.")]
+    Warning(#[from] MeshGeneratorWarning),
+    #[error("Fatal error occurred during mesh generation: {0}")]
+    Fatal(#[from] Box<anyhow::Error>),
+}
 
 /// Contains everything from the world required to mesh a chunk,
 /// including the bordering voxels from its 6 neighboring chunks.
@@ -41,13 +70,24 @@ impl ChunkMeshGeneratorInput {
     pub fn try_from_map<T: IChunkRenderState>(
         chunks: &DashMap<ChunkPos, Chunk<T>>,
         center_pos: ChunkPos,
-    ) -> anyhow::Result<Option<Self>> {
-        let chunk = chunks.get(&center_pos).with_context(|| {
-            format!(
-                "Tried to create ChunkMeshGeneratorInput for non-existent chunk at position {:?}",
-                center_pos
-            )
-        })?;
+    ) -> Result<Option<Self>, MeshGeneratorInputError> {
+        let Some(chunk) = chunks.get(&center_pos) else {
+            return Err(MeshGeneratorWarning::ChunkMissing {
+                position: center_pos,
+            }
+            .into());
+        };
+
+        // Copy the center now, so we don't have to hold the lock for longer than necessary
+        let center = UnpackedChunk::try_from_chunk(&chunk);
+        // Fast path for empty / completely solid chunks
+        let center = match center {
+            UnpackedChunkResult::Data(data) => data,
+            UnpackedChunkResult::Empty => {
+                // No need to mesh an empty chunk
+                return Ok(None);
+            }
+        };
 
         let mut neighbors = Box::new([
             (Border::new(Face::Bottom)),
@@ -62,18 +102,26 @@ impl ChunkMeshGeneratorInput {
 
         for (i, face) in Face::all().iter().enumerate() {
             let neighbor_pos = center_pos.get_neighbor(*face);
-            if let Some(neighbor_chunk) = chunks.get(&neighbor_pos) {
-                neighbors[i].copy_from_chunk(&neighbor_chunk);
-                if neighbors_occlude && !neighbors[i].occludes {
-                    neighbors_occlude = false;
+            let Some(neighbor_chunk) = chunks.get(&neighbor_pos) else {
+                return Err(MeshGeneratorWarning::NeighborMissing {
+                    position: center_pos,
+                    neighbor_pos,
                 }
-            } else {
-                // TODO: This causes panics for initial mesh generation, which doesn't ensure neighbor chunks are loaded yet
-                // Does this mean initial chunk might have invalid AO and / or extraneous faces, because neighbors are missing?
-                /*panic!(
-                    "Tried to create ChunkMeshGeneratorInput for {:?} but neighbor chunk at position {:?} does not exist",
-                    center_pos, neighbor_pos
-                );*/
+                .into());
+            };
+
+            if !neighbor_chunk.is_suitable_neighbor_for_meshing() {
+                return Err(MeshGeneratorWarning::NeighborInInvalidState {
+                    position: center_pos,
+                    neighbor_pos,
+                    state: neighbor_chunk.state.load(),
+                }
+                .into());
+            }
+
+            neighbors[i].copy_from_chunk(&neighbor_chunk);
+            if neighbors_occlude && !neighbors[i].occludes {
+                neighbors_occlude = false;
             }
         }
 
@@ -82,16 +130,6 @@ impl ChunkMeshGeneratorInput {
             // TODO: Handle edge case when the camera is inside a fully occluded chunk
             return Ok(None);
         }
-
-        let center = UnpackedChunk::try_from_chunk(&chunk);
-
-        let center = match center {
-            UnpackedChunkResult::Data(data) => data,
-            UnpackedChunkResult::Empty => {
-                // No need to mesh an empty chunk
-                return Ok(None);
-            }
-        };
 
         Ok(Some(ChunkMeshGeneratorInput {
             center,

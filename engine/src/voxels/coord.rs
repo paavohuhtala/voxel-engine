@@ -263,7 +263,10 @@ impl From<Vec3> for WorldPosF {
 impl WorldPosF {
     #[inline(always)]
     pub fn to_chunk_pos(&self) -> ChunkPos {
-        let converted_pos = self.0 / Vec3::splat(CHUNK_SIZE as f32).floor();
+        // Chunk coordinates are computed by dividing by chunk size and flooring.
+        // NOTE: `as_ivec3()` truncates toward zero, so we must floor first to
+        // handle negative coordinates correctly.
+        let converted_pos = (self.0 / Vec3::splat(CHUNK_SIZE as f32)).floor();
         ChunkPos(converted_pos.as_ivec3())
     }
 
@@ -271,5 +274,56 @@ impl WorldPosF {
     pub fn to_local_pos(&self) -> LocalPos {
         let converted_pos = self.0.rem_euclid(Vec3::splat(CHUNK_SIZE as f32)).floor();
         LocalPos(converted_pos.as_u8vec3())
+    }
+}
+
+#[cfg(test)]
+mod world_pos_f_tests {
+    use super::*;
+    use glam::Vec3;
+
+    #[test]
+    fn world_pos_f_to_chunk_pos_floors_correctly() {
+        // Positive side
+        assert_eq!(
+            WorldPosF(Vec3::new(0.0, 0.0, 0.0)).to_chunk_pos(),
+            ChunkPos::new(0, 0, 0)
+        );
+        assert_eq!(
+            WorldPosF(Vec3::new(15.999, 0.0, 0.0)).to_chunk_pos(),
+            ChunkPos::new(0, 0, 0)
+        );
+        assert_eq!(
+            WorldPosF(Vec3::new(16.0, 0.0, 0.0)).to_chunk_pos(),
+            ChunkPos::new(1, 0, 0)
+        );
+
+        // Negative side: must floor, not truncate toward zero.
+        assert_eq!(
+            WorldPosF(Vec3::new(-0.001, 0.0, 0.0)).to_chunk_pos(),
+            ChunkPos::new(-1, 0, 0)
+        );
+        assert_eq!(
+            WorldPosF(Vec3::new(-16.0, 0.0, 0.0)).to_chunk_pos(),
+            ChunkPos::new(-1, 0, 0)
+        );
+        assert_eq!(
+            WorldPosF(Vec3::new(-16.001, 0.0, 0.0)).to_chunk_pos(),
+            ChunkPos::new(-2, 0, 0)
+        );
+    }
+
+    #[test]
+    fn world_pos_f_to_local_pos_handles_negative() {
+        // -epsilon wraps to the last voxel of the previous chunk
+        assert_eq!(
+            WorldPosF(Vec3::new(-0.001, 0.0, 0.0)).to_local_pos(),
+            LocalPos::new(15, 0, 0)
+        );
+        // Exact boundary
+        assert_eq!(
+            WorldPosF(Vec3::new(-16.0, 0.0, 0.0)).to_local_pos(),
+            LocalPos::new(0, 0, 0)
+        );
     }
 }

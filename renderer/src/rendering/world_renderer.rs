@@ -10,7 +10,10 @@ use engine::{
     camera::Camera,
     chunk_loader::ChunkLoaderEvent,
     game_loop::GameLoopTime,
-    math::{aabb::PackedAABB, frustum::Frustum},
+    math::{
+        aabb::{AABB8, PackedAABB},
+        frustum::Frustum,
+    },
     mesh_generation::chunk_mesh::{ChunkMeshData, PackedVoxelFace},
     voxels::{
         chunk::{ChunkState, IChunkRenderContext, IChunkRenderState},
@@ -55,7 +58,6 @@ impl IChunkRenderContext for ChunkRenderContext {
     type FlushResult = (wgpu::CommandBuffer, Option<wgpu::Buffer>);
 
     fn flush(&mut self) -> Self::FlushResult {
-        log::info!("Flushing ChunkRenderContext batcher");
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor {
@@ -183,8 +185,12 @@ pub struct WorldRenderer {
     pub texture_manager: TextureManager,
     /// Maps chunk positions to their GPU chunk IDs for rendering
     rendered_chunks: HashMap<ChunkPos, u32>,
+    /// Cached mesh AABBs for currently rendered chunks (chunk-local coordinates).
+    rendered_chunk_aabbs: HashMap<ChunkPos, AABB8>,
     /// Whether to show chunk boundary wireframes for debugging
     pub show_chunk_bounds: bool,
+    /// If true, the chunk bounds debug pass draws each chunk's mesh AABB instead of the full chunk.
+    pub use_mesh_aabb_for_bounds: bool,
 }
 
 pub struct WorldRendererStatistics {
@@ -256,8 +262,9 @@ impl WorldRenderer {
             post_fx,
             texture_manager,
             rendered_chunks: HashMap::new(),
-            // Initialize with empty vecs for a few frames of buffer retention
+            rendered_chunk_aabbs: HashMap::new(),
             show_chunk_bounds: false,
+            use_mesh_aabb_for_bounds: false,
         }
     }
 
@@ -288,10 +295,20 @@ impl WorldRenderer {
                             // Insert or replace the chunk's GPU ID
                             self.rendered_chunks
                                 .insert(update.handle.pos, mesh_id as u32);
+
+                            // Cache the chunk's mesh AABB for debug rendering.
+                            if let Some(chunk) = world.chunks.get(&update.handle.pos)
+                                && let Some(render_state) = chunk.render_state.as_ref()
+                            {
+                                self.rendered_chunk_aabbs
+                                    .insert(update.handle.pos, render_state.mesh.aabb);
+                            }
+
                             update.handle.set_state(ChunkState::Ready);
                         } else {
                             // Empty chunk - remove from rendering if it was there
                             self.rendered_chunks.remove(&update.handle.pos);
+                            self.rendered_chunk_aabbs.remove(&update.handle.pos);
                             update.handle.set_state(ChunkState::ReadyEmpty);
                         }
                     }
@@ -299,6 +316,7 @@ impl WorldRenderer {
                 ChunkLoaderEvent::ChunksUnloaded(positions) => {
                     for pos in positions {
                         self.rendered_chunks.remove(&pos);
+                        self.rendered_chunk_aabbs.remove(&pos);
                     }
                 }
             }
@@ -348,10 +366,20 @@ impl WorldRenderer {
 
         // Render chunk bounds wireframes if enabled
         if self.show_chunk_bounds {
-            let chunk_positions: Vec<IVec3> =
-                self.rendered_chunks.keys().map(|pos| pos.0).collect();
-            self.chunk_bounds_pass
-                .update_chunks(&self.queue, &chunk_positions);
+            if self.use_mesh_aabb_for_bounds {
+                let chunks: Vec<(IVec3, AABB8)> = self
+                    .rendered_chunk_aabbs
+                    .iter()
+                    .map(|(pos, aabb)| (pos.0, *aabb))
+                    .collect();
+                self.chunk_bounds_pass
+                    .update_chunk_aabbs(&self.queue, &chunks);
+            } else {
+                let chunk_positions: Vec<IVec3> =
+                    self.rendered_chunks.keys().map(|pos| pos.0).collect();
+                self.chunk_bounds_pass
+                    .update_chunks(&self.queue, &chunk_positions);
+            }
             self.chunk_bounds_pass
                 .render(encoder, &self.scene_texture.view, depth_texture);
         }

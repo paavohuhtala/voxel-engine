@@ -22,6 +22,7 @@ egui-wgpu = { git = "https://github.com/emilk/egui.git", rev = "4a9fc7e6417b9ca8
 ] }
 egui-winit = { git = "https://github.com/emilk/egui.git", rev = "4a9fc7e6417b9ca838b880f2a89fd16468aece67" }
 bytesize = "2.3.1"
+glam = "0.30.9"
 
 [features]
 superluminal = ["engine/superluminal"]

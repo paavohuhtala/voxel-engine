@@ -10,6 +10,8 @@ use crate::rendering::{
     util::bind_group_builder::BindGroupBuilder,
 };
 
+use engine::math::aabb::AABB8;
+
 /// Vertex data for a single point in a chunk wireframe
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod)]
@@ -31,6 +33,19 @@ const CUBE_CORNERS: [Vec3; 8] = [
     Vec3::new(16.0, 16.0, 16.0), // 6: back-top-right
     Vec3::new(0.0, 16.0, 16.0),  // 7: back-top-left
 ];
+
+fn aabb_corners(min: Vec3, max: Vec3) -> [Vec3; 8] {
+    [
+        Vec3::new(min.x, min.y, min.z), // 0: front-bottom-left
+        Vec3::new(max.x, min.y, min.z), // 1: front-bottom-right
+        Vec3::new(max.x, max.y, min.z), // 2: front-top-right
+        Vec3::new(min.x, max.y, min.z), // 3: front-top-left
+        Vec3::new(min.x, min.y, max.z), // 4: back-bottom-left
+        Vec3::new(max.x, min.y, max.z), // 5: back-bottom-right
+        Vec3::new(max.x, max.y, max.z), // 6: back-top-right
+        Vec3::new(min.x, max.y, max.z), // 7: back-top-left
+    ]
+}
 
 /// Line indices for the 12 edges of a cube
 const CUBE_LINE_INDICES: [(usize, usize); 12] = [
@@ -62,6 +77,28 @@ pub fn generate_chunk_wireframe_vertices(chunk_pos: IVec3) -> Vec<ChunkBoundsVer
         });
         vertices.push(ChunkBoundsVertex {
             position: CUBE_CORNERS[*end],
+            chunk_position: chunk_pos,
+        });
+    }
+
+    vertices
+}
+
+pub fn generate_aabb_wireframe_vertices(
+    chunk_pos: IVec3,
+    aabb_min: Vec3,
+    aabb_max: Vec3,
+) -> Vec<ChunkBoundsVertex> {
+    let mut vertices = Vec::with_capacity(24);
+    let corners = aabb_corners(aabb_min, aabb_max);
+
+    for (start, end) in CUBE_LINE_INDICES.iter() {
+        vertices.push(ChunkBoundsVertex {
+            position: corners[*start],
+            chunk_position: chunk_pos,
+        });
+        vertices.push(ChunkBoundsVertex {
+            position: corners[*end],
             chunk_position: chunk_pos,
         });
     }
@@ -197,6 +234,29 @@ impl ChunkBoundsPass {
         let mut vertices = Vec::with_capacity(chunk_count * Self::VERTICES_PER_CHUNK);
         for &pos in chunk_positions.iter().take(chunk_count) {
             vertices.extend(generate_chunk_wireframe_vertices(pos));
+        }
+
+        queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+        self.vertex_count = vertices.len() as u32;
+    }
+
+    /// Update the vertex buffer with wireframes for the given per-chunk AABBs.
+    /// AABBs are chunk-local voxel coordinates; max is inclusive, so we expand by +1.
+    pub fn update_chunk_aabbs(&mut self, queue: &wgpu::Queue, chunks: &[(IVec3, AABB8)]) {
+        let chunk_count = chunks.len().min(self.max_chunks);
+
+        if chunk_count == 0 {
+            self.vertex_count = 0;
+            return;
+        }
+
+        let mut vertices = Vec::with_capacity(chunk_count * Self::VERTICES_PER_CHUNK);
+        for (pos, aabb8) in chunks.iter().take(chunk_count) {
+            let min = aabb8.min.as_vec3();
+            let mut max = aabb8.max.as_vec3() + Vec3::ONE;
+            // Clamp in case of unexpected values.
+            max = max.min(Vec3::splat(16.0));
+            vertices.extend(generate_aabb_wireframe_vertices(*pos, min, max));
         }
 
         queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));

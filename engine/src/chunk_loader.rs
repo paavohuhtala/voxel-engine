@@ -4,16 +4,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossbeam_channel::{Receiver, Sender, select};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, select};
 use dashmap::DashMap;
 use glam::IVec3;
 
 use crate::{
     assets::blocks::BlockDatabaseSlim,
     camera::Camera,
-    limits::LOAD_DISTANCE,
+    limits::UNLOAD_DISTANCE,
     mesh_generation::{
-        chunk_mesh_generator_input::ChunkMeshGeneratorInput, greedy_mesher::GreedyMesher,
+        chunk_mesh_generator_input::{
+            ChunkMeshGeneratorInput, MeshGeneratorInputError, MeshGeneratorWarning,
+        },
+        greedy_mesher::GreedyMesher,
     },
     visibility::generate_desired_chunk_offsets,
     voxels::{
@@ -42,8 +45,12 @@ pub enum ChunkLoaderCommand {
 
 // Used by chunk loader workers to communicate back to the chunk loader
 pub enum ChunkWorkerEvent<T: IChunkRenderState> {
-    ChunkLoaded(ChunkHandle),
-    ChunkReadyForMeshing(ChunkHandle),
+    /// The chunk is ready to be meshed (all neighbors are present). No further checks are needed.
+    ReadyForMeshing(ChunkHandle),
+    /// The chunk _might_ be ready for meshing, but the loader should verify its neighbors first.
+    /// This is used to retry meshing when a neighbor was missing or in an invalid state when meshing was first attempted.
+    PotentiallyReadyForMeshing(ChunkHandle),
+    /// One or more chunk meshes have been generated and are ready to be flushed to the GPU.
     MeshesGenerated(
         Vec<ChunkMeshUpdate>,
         Option<<T::Context as IChunkRenderContext>::FlushResult>,
@@ -55,16 +62,23 @@ pub type WorldChunks = Arc<DashMap<ChunkPos, Chunk>>;
 pub trait WorldAccess<T: IChunkRenderState>: Send + Sync {
     fn get_handle(&self, pos: ChunkPos) -> Option<ChunkHandle>;
     fn insert_initial_chunk(&self, pos: ChunkPos) -> ChunkHandle;
-    fn create_mesh_input(&self, pos: ChunkPos) -> anyhow::Result<Option<ChunkMeshGeneratorInput>>;
-    fn is_ready_for_meshing(&self, pos: ChunkPos) -> bool;
-    fn insert_chunk_data(
+    /// Computes the neighbor-ready bitmask for `pos` by checking the current world map.
+    /// A bit is set if the neighbor exists and is suitable for meshing.
+    fn compute_neighbor_mask(&self, pos: ChunkPos) -> u8;
+    fn create_mesh_input(
+        &self,
+        pos: ChunkPos,
+    ) -> Result<Option<ChunkMeshGeneratorInput>, MeshGeneratorInputError>;
+    /// Inserts voxel data to the chunk and updates its state and neighbor mask.
+    /// Also propagates neighbor-ready bits to neighboring chunks.
+    /// Return true if the chunk the data was inserted successfully, false if the chunk was not found (likely unloaded).
+    fn insert_chunk_data_and_update_neighbor_masks(
         &self,
         chunk: &ChunkHandle,
         data: ChunkData,
         sender: &Sender<ChunkWorkerEvent<T>>,
-    );
+    ) -> bool;
     fn insert_render_state(&self, pos: ChunkPos, render_state: T);
-    fn remove_chunk(&self, pos: ChunkPos);
     fn unload_chunks_outside_distance(&self, center: ChunkPos, distance: u32) -> Vec<ChunkPos>;
 }
 
@@ -80,78 +94,91 @@ impl<T: IChunkRenderState> WorldAccess<T> for DashMap<ChunkPos, Chunk<T>> {
         handle
     }
 
-    fn create_mesh_input(&self, pos: ChunkPos) -> anyhow::Result<Option<ChunkMeshGeneratorInput>> {
+    fn compute_neighbor_mask(&self, pos: ChunkPos) -> u8 {
+        let mut neighbor_mask = 0u8;
+
+        for face in Face::all().iter().copied() {
+            let neighbor_pos = pos.get_neighbor(face);
+            let neighbor_is_loaded = self
+                .get(&neighbor_pos)
+                .map(|c| c.is_suitable_neighbor_for_meshing())
+                .unwrap_or(false);
+
+            if neighbor_is_loaded {
+                neighbor_mask |= 1 << (face as u8);
+            }
+        }
+
+        neighbor_mask
+    }
+
+    fn create_mesh_input(
+        &self,
+        pos: ChunkPos,
+    ) -> Result<Option<ChunkMeshGeneratorInput>, MeshGeneratorInputError> {
         ChunkMeshGeneratorInput::try_from_map(self, pos)
     }
 
-    fn is_ready_for_meshing(&self, pos: ChunkPos) -> bool {
-        if let Some(chunk) = self.get(&pos) {
-            chunk.neighbor_state.is_ready_for_meshing()
-        } else {
-            false
-        }
-    }
-
-    fn insert_chunk_data(
+    fn insert_chunk_data_and_update_neighbor_masks(
         &self,
         chunk: &ChunkHandle,
         data: ChunkData,
         sender: &Sender<ChunkWorkerEvent<T>>,
-    ) {
-        // Update the existing chunk's data in place, preserving state and neighbor_state Arcs
+    ) -> bool {
         if let Some(mut existing) = self.get_mut(&chunk.pos) {
             existing.data = Some(data);
         } else {
-            // Chunk was removed (e.g., unloaded) while being generated, ignore
-            return;
+            // Chunk was unloaded before data could be inserted, ignore
+            return false;
         }
 
         // Mark this chunk as generated for every neighboring chunk
         let mut neighbor_bits = 0u8;
         for direction in Face::all().iter().copied() {
             let neighbor_pos = chunk.pos.get_neighbor(direction);
-            if let Some(neighbor) = self.get_handle(neighbor_pos) {
-                let neighbor_state = neighbor.state();
-                if neighbor_state < ChunkState::Loaded {
-                    // Neighbor is not yet loaded, skip
-                    continue;
-                }
 
-                let neighbor_ready_for_meshing = neighbor
+            let Some(neighbor_chunk) = self.get(&neighbor_pos) else {
+                continue;
+            };
+
+            // For each not-unloaded neighbor, mark that neighbor as having this chunk present
+            let neighbor_handle = neighbor_chunk.handle();
+            if neighbor_handle.state() != ChunkState::Unloaded {
+                let neighbor_ready_for_meshing = neighbor_handle
                     .neighbor_state
                     .set_neighbor_ready(direction.opposite());
 
-                if neighbor_ready_for_meshing {
+                // Enqueue the neighbor for meshing if it's now ready
+                if neighbor_ready_for_meshing && neighbor_handle.state() == ChunkState::Loaded {
                     sender
-                        .send(ChunkWorkerEvent::ChunkReadyForMeshing(neighbor))
+                        .send(ChunkWorkerEvent::ReadyForMeshing(neighbor_handle))
                         .unwrap();
                 }
 
-                neighbor_bits |= 1 << (direction as u8);
+                // Track which neighbors are already suitable so we can set our own neighbor mask.
+                if neighbor_chunk.is_suitable_neighbor_for_meshing() {
+                    neighbor_bits |= 1 << (direction as u8);
+                }
             }
         }
 
-        let ready_for_meshing = chunk.neighbor_state.set_neighbor_bits(neighbor_bits);
-
-        if ready_for_meshing {
-            sender
-                .send(ChunkWorkerEvent::ChunkReadyForMeshing(chunk.clone()))
-                .unwrap();
-        } else {
-            // Just mark this as loaded
-            chunk.set_state(ChunkState::Loaded);
+        if chunk.try_transition(ChunkState::Generating, ChunkState::Loaded) {
+            let ready_for_meshing = chunk.neighbor_state.set_neighbor_bits(neighbor_bits);
+            if ready_for_meshing {
+                sender
+                    .send(ChunkWorkerEvent::ReadyForMeshing(chunk.clone()))
+                    .unwrap();
+            }
         }
-    }
 
-    fn remove_chunk(&self, pos: ChunkPos) {
-        self.remove(&pos);
+        true
     }
 
     fn insert_render_state(&self, pos: ChunkPos, render_state: T) {
         if let Some(mut chunk) = self.get_mut(&pos) {
             let state = chunk.state.load();
             if state == ChunkState::Unloaded {
-                // Chunks is about to be unloaded, don't insert render state
+                // Chunk is about to be unloaded, don't insert render state
                 return;
             }
             chunk.render_state = Some(render_state);
@@ -160,15 +187,33 @@ impl<T: IChunkRenderState> WorldAccess<T> for DashMap<ChunkPos, Chunk<T>> {
 
     fn unload_chunks_outside_distance(&self, center: ChunkPos, distance: u32) -> Vec<ChunkPos> {
         let mut removed = Vec::new();
+
         self.retain(|pos, chunk| {
             let dist = pos.0.chebyshev_distance(center.0);
-            let keep = dist <= distance;
-            if !keep {
-                chunk.before_unload();
+            let should_keep = dist <= distance;
+            if !should_keep {
+                chunk.unload();
                 removed.push(*pos);
             }
-            keep
+            should_keep
         });
+
+        if removed.is_empty() {
+            return Vec::new();
+        }
+
+        // Update neighbor states of remaining chunks
+        for removed_pos in &removed {
+            for face in Face::all().iter().copied() {
+                let neighbor_pos = removed_pos.get_neighbor(face);
+                if let Some(neighbor) = self.get(&neighbor_pos) {
+                    neighbor
+                        .neighbor_state
+                        .clear_neighbor_ready(face.opposite());
+                }
+            }
+        }
+
         removed
     }
 }
@@ -195,6 +240,8 @@ pub struct ChunkLoader<T: IChunkRenderState> {
     worker_event_receiver: Receiver<ChunkWorkerEvent<T>>,
     event_sender: Sender<ChunkLoaderEvent<T>>,
     previous_chunk_pos: ChunkPos,
+    pending_chunk_pos: Option<ChunkPos>,
+    pending_chunk_pos_since: Instant,
     world_access: Arc<dyn WorldAccess<T>>,
     camera_moved_receiver: Receiver<()>,
     worker_pool: ChunkLoaderWorkerPool,
@@ -226,7 +273,7 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
 
                 let worker_pool = ChunkLoaderWorkerPool::new(
                     // TODO: use num_cpus crate
-                    8,
+                    16,
                     worker_event_sender,
                     world_generator,
                     block_database,
@@ -239,6 +286,8 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
                     worker_event_receiver,
                     event_sender,
                     previous_chunk_pos: ChunkPos::new(0, 0, 0),
+                    pending_chunk_pos: None,
+                    pending_chunk_pos_since: Instant::now(),
                     world_access,
                     camera_moved_receiver,
                     desired_generation_offsets: offsets,
@@ -272,11 +321,17 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
                 }
                 recv(self.worker_event_receiver) -> event => {
                     match event {
-                        Ok(ChunkWorkerEvent::ChunkLoaded(_chunk)) => {
+                        Ok(ChunkWorkerEvent::ReadyForMeshing(chunk)) => {
+                            if chunk.try_transition(ChunkState::Loaded, ChunkState::InMeshingQueue) {
+                                self.job_queue.push(ChunkLoaderJob::GenerateMesh(chunk));
+                            }
                         }
-                        Ok(ChunkWorkerEvent::ChunkReadyForMeshing(chunk)) => {
-                            chunk.set_state(ChunkState::InMeshingQueue);
-                            self.job_queue.push(ChunkLoaderJob::GenerateMesh(chunk));
+                        Ok(ChunkWorkerEvent::PotentiallyReadyForMeshing(chunk)) => {
+                            if chunk.neighbor_state.is_ready_for_meshing()
+                                && chunk.try_transition(ChunkState::Loaded, ChunkState::InMeshingQueue)
+                            {
+                                self.job_queue.push(ChunkLoaderJob::GenerateMesh(chunk));
+                            }
                         }
                         Ok(ChunkWorkerEvent::MeshesGenerated(updates, flush_results)) => {
                             self.event_sender.send(ChunkLoaderEvent::ChunkMeshesReady(updates, flush_results)).unwrap();
@@ -322,6 +377,26 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
             WorldPosF(camera.eye).to_chunk_pos()
         };
 
+        // Apply debounce to avoid rapid chunk loading/unloading when the camera is near chunk boundaries
+        const CHUNK_POS_DEBOUNCE: Duration = Duration::from_millis(16);
+        if current_chunk_pos != self.previous_chunk_pos {
+            match self.pending_chunk_pos {
+                Some(pending) if pending == current_chunk_pos => {
+                    if self.pending_chunk_pos_since.elapsed() < CHUNK_POS_DEBOUNCE {
+                        return;
+                    }
+                }
+                _ => {
+                    self.pending_chunk_pos = Some(current_chunk_pos);
+                    self.pending_chunk_pos_since = Instant::now();
+                    return;
+                }
+            }
+        }
+
+        // Either stable, or the debounce period elapsed
+        self.pending_chunk_pos = None;
+
         // Camera moved but chunk didn't change, nothing to do
         if current_chunk_pos == self.previous_chunk_pos {
             return;
@@ -331,34 +406,17 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
 
         // Prune generation and meshing queues from chunks that are no longer desired
         self.job_queue.retain(|job| {
-            let chunk = match job {
-                ChunkLoaderJob::GenerateChunk(chunk) => chunk,
-                ChunkLoaderJob::GenerateMesh(chunk) => chunk,
-            };
+            let chunk = job.chunk_handle();
             let distance = chunk.pos.0.chebyshev_distance(current_chunk_pos.0);
-            let should_retain = distance <= (LOAD_DISTANCE as u32);
-
-            if !should_retain {
-                // Reset state so that unload_chunks_outside_distance will decrement the correct state.
-                // Don't call before_unload here - the chunk will be properly unloaded below.
-                match job {
-                    ChunkLoaderJob::GenerateChunk(_) => {
-                        chunk.set_state(ChunkState::Initial);
-                    }
-                    ChunkLoaderJob::GenerateMesh(_) => {
-                        chunk.set_state(ChunkState::Loaded);
-                    }
-                }
-            }
-
-            should_retain
+            // If the chunk is going to be unloaded, we don't have to bother resetting its state
+            distance <= (UNLOAD_DISTANCE as u32)
         });
 
         // Unload chunks that are now out of range
         // TODO: This might be slow
         let unloaded = self
             .world_access
-            .unload_chunks_outside_distance(current_chunk_pos, LOAD_DISTANCE as u32);
+            .unload_chunks_outside_distance(current_chunk_pos, UNLOAD_DISTANCE as u32);
 
         self.event_sender
             .send(ChunkLoaderEvent::ChunksUnloaded(unloaded))
@@ -368,53 +426,32 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
         for offset in &self.desired_generation_offsets {
             let chunk_pos = current_chunk_pos + ChunkPos(*offset);
             let chunk = self.world_access.get_handle(chunk_pos);
-
-            let Some(chunk) = chunk else {
-                // Chunk doesn't exist in the world, insert an initial chunk and enqueue for generation
+            if chunk.is_none() {
                 let chunk = self.world_access.insert_initial_chunk(chunk_pos);
                 chunk.set_state(ChunkState::InGenerationQueue);
                 self.job_queue.push(ChunkLoaderJob::GenerateChunk(chunk));
-                continue;
-            };
-
-            match chunk.state() {
-                ChunkState::Initial => {
-                    // Chunk exists in the world but is not yet being generated, enqueue for generation
-                    chunk.set_state(ChunkState::InGenerationQueue);
-                    self.job_queue.push(ChunkLoaderJob::GenerateChunk(chunk));
-                }
-                ChunkState::InGenerationQueue | ChunkState::Generating => {
-                    // Already in generation queue or being generated, do nothing
-                }
-                ChunkState::Loaded => {
-                    // Chunk is loaded and not in meshing queue
-                    // Check neighbor status, and move to meshing queue if ready
-                    // TODO: But is this necessary? Chunks are moved to the meshing queue right after generation
-                    // Maybe we should have special handling for these kinds of chunks, and not do this all the time
-                    let can_mesh = chunk.neighbor_state.is_ready_for_meshing();
-
-                    if can_mesh {
-                        chunk.set_state(ChunkState::InMeshingQueue);
-                        self.job_queue.push(ChunkLoaderJob::GenerateMesh(chunk));
-                    }
-                }
-                ChunkState::InMeshingQueue
-                | ChunkState::Meshing
-                | ChunkState::WaitingForRendererFlush => {
-                    // Already in meshing queue or being meshed, do nothing
-                }
-                ChunkState::Ready | ChunkState::ReadyEmpty => {
-                    // Chunk is finished, nothing to do
-                }
-                ChunkState::Unloaded => {
-                    // Chunk was unloaded, should not happen since we just got the handle from the map
-                    log::warn!(
-                        "Encountered Unloaded chunk in on_camera_moved at {:?}",
-                        chunk.pos
-                    );
-                }
             }
+
+            // We shouldn't have to do anything to existing chunks:
+            // - The only source of inital chunks is the code above, which are immediately enqueued for generation
+            // - We don't have to do anything to chunks that are in generation or meshing queues, they will be processed in due time
+            // - Same for chunks that are currently being generated, meshed or waiting for renderer flush
+            // - Newly generated chunks will be enqueued for meshing if ready, and if they are not immediately ready,
+            //   their neighbors will enqueue them when they become ready
+            // - There's nothing to do for chunks that are already ready
+            // - The world should never contain unloaded chunks
         }
+
+        // Sort the job queue so that chunks closer to the camera are processed first
+        let camera_chunk_pos = current_chunk_pos;
+        self.job_queue.sort_unstable_by_key(|job| {
+            let pos = match job {
+                ChunkLoaderJob::GenerateChunk(chunk) => chunk.pos.0,
+                ChunkLoaderJob::GenerateMesh(chunk) => chunk.pos.0,
+            };
+            // Highest priority jobs are at the _end_ of the queue, so negate the distance
+            -(pos.chebyshev_distance(camera_chunk_pos.0) as i32)
+        });
     }
 }
 
@@ -474,6 +511,15 @@ enum ChunkLoaderJob {
     GenerateMesh(ChunkHandle),
 }
 
+impl ChunkLoaderJob {
+    pub fn chunk_handle(&self) -> &ChunkHandle {
+        match self {
+            ChunkLoaderJob::GenerateChunk(chunk) => chunk,
+            ChunkLoaderJob::GenerateMesh(chunk) => chunk,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ChunkMeshUpdate {
     pub handle: ChunkHandle,
@@ -515,29 +561,92 @@ impl<T: IChunkRenderState> ChunkLoaderWorker<T> {
     }
 
     fn generate_chunk(&mut self, chunk: ChunkHandle) {
-        chunk.set_state(ChunkState::Generating);
+        if !chunk.try_transition(ChunkState::InGenerationQueue, ChunkState::Generating) {
+            // Chunk has likely been unloaded while in the generation queue, ignore
+            return;
+        }
+
         let data = self.world_generator.generate_chunk(chunk.pos);
-        self.chunk_access
-            .insert_chunk_data(&chunk, data, &self.event_sender);
-        self.event_sender
-            .send(ChunkWorkerEvent::ChunkLoaded(chunk))
-            .unwrap();
+        let _ = self
+            .chunk_access
+            .insert_chunk_data_and_update_neighbor_masks(&chunk, data, &self.event_sender);
     }
 
-    fn generate_mesh(&mut self, chunk: ChunkHandle, input: ChunkMeshGeneratorInput) {
+    fn generate_mesh(&mut self, chunk: ChunkHandle) {
+        if !chunk.try_transition(ChunkState::InMeshingQueue, ChunkState::Meshing) {
+            // Chunk has likely been unloaded while in the meshing queue, ignore
+            return;
+        }
+
+        let input = match self.chunk_access.create_mesh_input(chunk.pos) {
+            Ok(input) => input,
+            Err(err) => {
+                // We failed to create mesh input, handle the error
+                match err {
+                    MeshGeneratorInputError::Warning(warning) => {
+                        match warning {
+                            MeshGeneratorWarning::ChunkMissing { .. } => {
+                                // The chunk was likely unloaded while waiting for meshing
+                                // Nothing to do here
+                            }
+                            MeshGeneratorWarning::NeighborMissing { .. }
+                            | MeshGeneratorWarning::NeighborInInvalidState { .. } => {
+                                // Since we tried to mesh but a neighbor is missing or invalid, the most likely explanation is that
+                                // the neighbor was unloaded while waiting for meshing.
+                                // Roll back the chunk to Loaded state and re-enqueue it for meshing
+                                if chunk.try_transition(ChunkState::Meshing, ChunkState::Loaded) {
+                                    self.event_sender
+                                        .send(ChunkWorkerEvent::PotentiallyReadyForMeshing(chunk))
+                                        .unwrap();
+                                }
+                            }
+                        }
+                    }
+                    MeshGeneratorInputError::Fatal(err) => {
+                        log::error!(
+                            "Failed to create mesh input for chunk {:?}: {:?}",
+                            chunk.pos,
+                            err
+                        );
+                    }
+                }
+
+                return;
+            }
+        };
+
+        let Some(input) = input else {
+            // The chunk doesn't need a mesh, since it's either empty or fully occluded.
+            // Mark it as ready-empty and enqueue for renderer flush.
+            if chunk.try_transition(ChunkState::Meshing, ChunkState::WaitingForRendererFlush) {
+                self.event_sender
+                    .send(ChunkWorkerEvent::MeshesGenerated(
+                        vec![ChunkMeshUpdate {
+                            handle: chunk,
+                            id: None,
+                        }],
+                        None,
+                    ))
+                    .unwrap();
+            }
+            return;
+        };
+
         let mesh_data = self.mesh_generator.generate_mesh(&input);
         let render_state = T::create_and_upload_mesh(&mut self.render_context, mesh_data);
         let id = render_state.chunk_gpu_id();
-        self.chunk_access
-            .insert_render_state(input.center_pos, render_state);
-        chunk.set_state(ChunkState::WaitingForRendererFlush);
-        self.pending_chunks.push(ChunkMeshUpdate {
-            handle: chunk,
-            id: Some(id),
-        });
 
-        if self.pending_chunks.len() >= 16 {
-            self.try_flush();
+        if chunk.try_transition(ChunkState::Meshing, ChunkState::WaitingForRendererFlush) {
+            self.chunk_access
+                .insert_render_state(input.center_pos, render_state);
+            self.pending_chunks.push(ChunkMeshUpdate {
+                handle: chunk,
+                id: Some(id),
+            });
+
+            if self.pending_chunks.len() >= 16 {
+                self.try_flush();
+            }
         }
     }
 
@@ -546,7 +655,7 @@ impl<T: IChunkRenderState> ChunkLoaderWorker<T> {
             return;
         }
 
-        log::info!(
+        log::debug!(
             "Flushing {} pending chunk meshes",
             self.pending_chunks.len()
         );
@@ -578,37 +687,12 @@ impl<T: IChunkRenderState> ChunkLoaderWorker<T> {
                     self.generate_chunk(chunk);
                 }
                 Ok(ChunkLoaderJob::GenerateMesh(chunk)) => {
-                    chunk.set_state(ChunkState::Meshing);
-                    match self.chunk_access.create_mesh_input(chunk.pos) {
-                        Ok(Some(input)) => {
-                            self.generate_mesh(chunk, input);
-                        }
-                        Ok(None) => {
-                            chunk.set_state(ChunkState::WaitingForRendererFlush);
-                            self.event_sender
-                                .send(ChunkWorkerEvent::MeshesGenerated(
-                                    vec![ChunkMeshUpdate {
-                                        handle: chunk,
-                                        id: None,
-                                    }],
-                                    None,
-                                ))
-                                .unwrap();
-                        }
-                        Err(e) => {
-                            log::error!(
-                                "Failed to create mesh input for chunk {:?}: {:?}",
-                                chunk.pos,
-                                e
-                            );
-                        }
-                    }
+                    self.generate_mesh(chunk);
                 }
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    // Just loop around to check flush time
+                Err(RecvTimeoutError::Timeout) => {
                     continue;
                 }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                Err(RecvTimeoutError::Disconnected) => {
                     break;
                 }
             }

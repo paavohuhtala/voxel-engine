@@ -838,6 +838,7 @@ dependencies = [
  "ron",
  "serde",
  "splines",
+ "thiserror 2.0.17",
  "tinyvec",
  "wgpu",
 ]
@@ -1043,6 +1044,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "engine",
+ "glam 0.30.9",
  "log",
  "pollster",
  "pretty_env_logger",

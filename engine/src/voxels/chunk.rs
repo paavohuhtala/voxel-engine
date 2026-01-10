@@ -201,6 +201,7 @@ pub enum ChunkState {
     // TODO: Add separate ReadyOccluded state here
     /// Chunk has been unloaded. This is a terminal state - any further state transitions are ignored.
     /// This state is not tracked in statistics.
+    /// While unloaded chunks are removed from the map, handles continue to exist and can point to this state.
     Unloaded,
 }
 
@@ -245,6 +246,17 @@ impl ChunkNeighborState {
         (previous | bits) == Self::ALL_NEIGHBORS_MASK
     }
 
+    /// Clears the neighbor-ready bit for the given direction.
+    pub fn clear_neighbor_ready(&self, direction: Face) {
+        let mask = !(1 << (direction as u8));
+        self.0.fetch_and(mask, Ordering::SeqCst);
+    }
+
+    /// Clears multiple neighbor bits at once.
+    pub fn clear_neighbor_bits(&self, bits: u8) {
+        self.0.fetch_and(!bits, Ordering::SeqCst);
+    }
+
     pub fn is_ready_for_meshing(&self) -> bool {
         self.0.load(Ordering::SeqCst) == Self::ALL_NEIGHBORS_MASK
     }
@@ -257,7 +269,6 @@ impl ChunkNeighborState {
 pub struct Chunk<T: IChunkRenderState = ()> {
     pub position: ChunkPos,
     pub data: Option<ChunkData>,
-    // TODO: Wrap this in crossbeam::atomic::AtomicCell?
     pub state: Arc<AtomicCell<ChunkState>>,
     pub render_state: Option<T>,
     pub neighbor_state: Arc<ChunkNeighborState>,
@@ -284,6 +295,26 @@ impl ChunkHandle {
         self.state.load()
     }
 
+    /// Attempts a single atomic state transition from `from` to `to`.
+    /// Returns true only if the transition succeeded.
+    pub fn try_transition(&self, from: ChunkState, to: ChunkState) -> bool {
+        if from == to {
+            return false;
+        }
+
+        // Don't transition unloaded chunks
+        if self.state.load() == ChunkState::Unloaded {
+            return false;
+        }
+
+        if self.state.compare_exchange(from, to).is_ok() {
+            CHUNKS_BY_STATE.transition(from, to);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Sets the state of the chunk and updates the global statistics.
     /// If the chunk has already been unloaded, this is a no-op.
     pub fn set_state(&self, new_state: ChunkState) {
@@ -291,6 +322,10 @@ impl ChunkHandle {
             let old_state = self.state.load();
             if old_state == ChunkState::Unloaded {
                 // Chunk was unloaded, ignore any further state transitions
+                return;
+            }
+            if old_state == new_state {
+                // Avoid no-op transitions (would corrupt statistics)
                 return;
             }
             if self.state.compare_exchange(old_state, new_state).is_ok() {
@@ -380,7 +415,7 @@ impl<T: IChunkRenderState> Chunk<T> {
 
     pub fn is_suitable_neighbor_for_meshing(&self) -> bool {
         let state = self.state.load();
-        state >= ChunkState::Loaded && state < ChunkState::Unloaded
+        self.data.is_some() && state < ChunkState::Unloaded
     }
 
     pub fn handle(&self) -> ChunkHandle {
@@ -391,9 +426,13 @@ impl<T: IChunkRenderState> Chunk<T> {
         }
     }
 
+    pub fn is_ready_for_meshing(&self) -> bool {
+        self.data.is_some() && self.neighbor_state.is_ready_for_meshing()
+    }
+
     /// Marks the chunk as unloaded and decrements the statistics for the current state.
     /// This uses compare-exchange to prevent race conditions with set_state on handles.
-    pub fn before_unload(&self) {
+    pub fn unload(&self) {
         loop {
             let old_state = self.state.load();
             if old_state == ChunkState::Unloaded {
@@ -570,5 +609,23 @@ mod tests {
         } else {
             panic!("Chunk should be packed");
         }
+    }
+
+    #[test]
+    fn test_neighbor_bits_can_be_cleared() {
+        let state = ChunkNeighborState::default();
+        assert!(!state.is_ready_for_meshing());
+
+        // Set all neighbors
+        state.set_neighbor_bits(0b0011_1111);
+        assert!(state.is_ready_for_meshing());
+
+        // Clear one bit and ensure readiness drops
+        state.clear_neighbor_ready(Face::Right);
+        assert!(!state.is_ready_for_meshing());
+
+        // Re-set it and ensure readiness returns
+        state.set_neighbor_ready(Face::Right);
+        assert!(state.is_ready_for_meshing());
     }
 }
