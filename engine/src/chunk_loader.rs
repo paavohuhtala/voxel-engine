@@ -1,17 +1,17 @@
 use std::{
+    collections::HashSet,
     sync::{Arc, RwLock},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, select};
-use dashmap::DashMap;
 use glam::IVec3;
 
 use crate::{
     assets::blocks::BlockDatabaseSlim,
     camera::Camera,
-    limits::UNLOAD_DISTANCE,
+    limits::{LOAD_DISTANCE, UNLOAD_DISTANCE},
     mesh_generation::{
         chunk_mesh_generator_input::{
             ChunkMeshGeneratorInput, MeshGeneratorInputError, MeshGeneratorWarning,
@@ -26,6 +26,7 @@ use crate::{
         coord::{ChunkPos, WorldPosF},
         face::Face,
     },
+    world::WorldChunks,
     worldgen::WorldGenerator,
 };
 
@@ -57,10 +58,8 @@ pub enum ChunkWorkerEvent<T: IChunkRenderState> {
     ),
 }
 
-pub type WorldChunks = Arc<DashMap<ChunkPos, Chunk>>;
-
 pub trait WorldAccess<T: IChunkRenderState>: Send + Sync {
-    fn get_handle(&self, pos: ChunkPos) -> Option<ChunkHandle>;
+    fn exists(&self, pos: ChunkPos) -> bool;
     fn insert_initial_chunk(&self, pos: ChunkPos) -> ChunkHandle;
     /// Computes the neighbor-ready bitmask for `pos` by checking the current world map.
     /// A bit is set if the neighbor exists and is suitable for meshing.
@@ -79,12 +78,15 @@ pub trait WorldAccess<T: IChunkRenderState>: Send + Sync {
         sender: &Sender<ChunkWorkerEvent<T>>,
     ) -> bool;
     fn insert_render_state(&self, pos: ChunkPos, render_state: T);
+    /// Unloads and removes the given chunk positions from the world map.
+    /// Returns the positions that were actually removed.
+    fn unload_chunks(&self, positions: &[ChunkPos]) -> Vec<ChunkPos>;
     fn unload_chunks_outside_distance(&self, center: ChunkPos, distance: u32) -> Vec<ChunkPos>;
 }
 
-impl<T: IChunkRenderState> WorldAccess<T> for DashMap<ChunkPos, Chunk<T>> {
-    fn get_handle(&self, pos: ChunkPos) -> Option<ChunkHandle> {
-        self.get(&pos).map(|chunk| chunk.handle())
+impl<T: IChunkRenderState> WorldAccess<T> for WorldChunks<T> {
+    fn exists(&self, pos: ChunkPos) -> bool {
+        self.contains_key(&pos)
     }
 
     fn insert_initial_chunk(&self, pos: ChunkPos) -> ChunkHandle {
@@ -185,6 +187,35 @@ impl<T: IChunkRenderState> WorldAccess<T> for DashMap<ChunkPos, Chunk<T>> {
         }
     }
 
+    fn unload_chunks(&self, positions: &[ChunkPos]) -> Vec<ChunkPos> {
+        let mut removed = Vec::new();
+
+        for pos in positions {
+            if let Some((pos, chunk)) = self.remove(pos) {
+                chunk.unload();
+                removed.push(pos);
+            }
+        }
+
+        if removed.is_empty() {
+            return Vec::new();
+        }
+
+        // Update neighbor states of remaining chunks
+        for removed_pos in &removed {
+            for face in Face::all().iter().copied() {
+                let neighbor_pos = removed_pos.get_neighbor(face);
+                if let Some(neighbor) = self.get(&neighbor_pos) {
+                    neighbor
+                        .neighbor_state
+                        .clear_neighbor_ready(face.opposite());
+                }
+            }
+        }
+
+        removed
+    }
+
     fn unload_chunks_outside_distance(&self, center: ChunkPos, distance: u32) -> Vec<ChunkPos> {
         let mut removed = Vec::new();
 
@@ -248,9 +279,61 @@ pub struct ChunkLoader<T: IChunkRenderState> {
     desired_generation_offsets: Vec<IVec3>,
     job_queue: Vec<ChunkLoaderJob>,
     camera: Arc<RwLock<Camera>>,
+
+    boundary_slab_scratch: HashSet<ChunkPos>,
+    boundary_slab_batch: Vec<ChunkPos>,
 }
 
 impl<T: IChunkRenderState> ChunkLoader<T> {
+    fn for_each_boundary_slab_position(
+        &mut self,
+        center: IVec3,
+        delta: IVec3,
+        radius: i32,
+        direction_multiplier: i32,
+        mut f: impl FnMut(&mut Self, ChunkPos),
+    ) {
+        debug_assert!(direction_multiplier == 1 || direction_multiplier == -1);
+
+        let span = (2 * radius + 1) as usize;
+        let mut positions = std::mem::take(&mut self.boundary_slab_scratch);
+        positions.clear();
+        positions.reserve(span * span * 3);
+
+        if delta.x != 0 {
+            let x_plane = center.x + direction_multiplier * radius * delta.x.signum();
+            for y in -radius..=radius {
+                for z in -radius..=radius {
+                    positions.insert(ChunkPos::new(x_plane, center.y + y, center.z + z));
+                }
+            }
+        }
+
+        if delta.y != 0 {
+            let y_plane = center.y + direction_multiplier * radius * delta.y.signum();
+            for x in -radius..=radius {
+                for z in -radius..=radius {
+                    positions.insert(ChunkPos::new(center.x + x, y_plane, center.z + z));
+                }
+            }
+        }
+
+        if delta.z != 0 {
+            let z_plane = center.z + direction_multiplier * radius * delta.z.signum();
+            for x in -radius..=radius {
+                for y in -radius..=radius {
+                    positions.insert(ChunkPos::new(center.x + x, center.y + y, z_plane));
+                }
+            }
+        }
+
+        for pos in positions.drain() {
+            f(self, pos);
+        }
+
+        self.boundary_slab_scratch = positions;
+    }
+
     pub fn start(
         world_generator: Box<dyn WorldGenerator>,
         block_database: Arc<BlockDatabaseSlim>,
@@ -294,6 +377,9 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
                     worker_pool,
                     job_queue: Vec::new(),
                     camera: camera_clone,
+
+                    boundary_slab_scratch: HashSet::new(),
+                    boundary_slab_batch: Vec::new(),
                 };
 
                 chunk_loader.run()
@@ -402,6 +488,10 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
             return;
         }
 
+        let previous_chunk_pos = self.previous_chunk_pos;
+        let delta = current_chunk_pos.0 - previous_chunk_pos.0;
+        let small_step = delta.x.abs() <= 1 && delta.y.abs() <= 1 && delta.z.abs() <= 1;
+
         self.previous_chunk_pos = current_chunk_pos;
 
         // Prune generation and meshing queues from chunks that are no longer desired
@@ -412,34 +502,52 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
             distance <= (UNLOAD_DISTANCE as u32)
         });
 
-        // Unload chunks that are now out of range
-        // TODO: This might be slow
-        let unloaded = self
-            .world_access
-            .unload_chunks_outside_distance(current_chunk_pos, UNLOAD_DISTANCE as u32);
+        // Unload chunks that are now out of range.
+        let unloaded = if small_step {
+            self.boundary_slab_batch.clear();
+            self.for_each_boundary_slab_position(
+                previous_chunk_pos.0,
+                delta,
+                UNLOAD_DISTANCE,
+                -1,
+                |this, pos| this.boundary_slab_batch.push(pos),
+            );
+            self.world_access.unload_chunks(&self.boundary_slab_batch)
+        } else {
+            // Fallback for large jumps/teleports: scan the whole map.
+            self.world_access
+                .unload_chunks_outside_distance(current_chunk_pos, UNLOAD_DISTANCE as u32)
+        };
 
         self.event_sender
             .send(ChunkLoaderEvent::ChunksUnloaded(unloaded))
             .unwrap();
 
         // Enqueue new chunks for generation
-        for offset in &self.desired_generation_offsets {
-            let chunk_pos = current_chunk_pos + ChunkPos(*offset);
-            let chunk = self.world_access.get_handle(chunk_pos);
-            if chunk.is_none() {
-                let chunk = self.world_access.insert_initial_chunk(chunk_pos);
-                chunk.set_state(ChunkState::InGenerationQueue);
-                self.job_queue.push(ChunkLoaderJob::GenerateChunk(chunk));
+        if small_step {
+            self.for_each_boundary_slab_position(
+                current_chunk_pos.0,
+                delta,
+                LOAD_DISTANCE,
+                1,
+                |this, chunk_pos| {
+                    if !this.world_access.exists(chunk_pos) {
+                        let chunk = this.world_access.insert_initial_chunk(chunk_pos);
+                        chunk.set_state(ChunkState::InGenerationQueue);
+                        this.job_queue.push(ChunkLoaderJob::GenerateChunk(chunk));
+                    }
+                },
+            );
+        } else {
+            // Fallback for large jumps/teleports: scan the whole cube.
+            for offset in &self.desired_generation_offsets {
+                let chunk_pos = current_chunk_pos + ChunkPos(*offset);
+                if !self.world_access.exists(chunk_pos) {
+                    let chunk = self.world_access.insert_initial_chunk(chunk_pos);
+                    chunk.set_state(ChunkState::InGenerationQueue);
+                    self.job_queue.push(ChunkLoaderJob::GenerateChunk(chunk));
+                }
             }
-
-            // We shouldn't have to do anything to existing chunks:
-            // - The only source of inital chunks is the code above, which are immediately enqueued for generation
-            // - We don't have to do anything to chunks that are in generation or meshing queues, they will be processed in due time
-            // - Same for chunks that are currently being generated, meshed or waiting for renderer flush
-            // - Newly generated chunks will be enqueued for meshing if ready, and if they are not immediately ready,
-            //   their neighbors will enqueue them when they become ready
-            // - There's nothing to do for chunks that are already ready
-            // - The world should never contain unloaded chunks
         }
 
         // Sort the job queue so that chunks closer to the camera are processed first
@@ -450,7 +558,7 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
                 ChunkLoaderJob::GenerateMesh(chunk) => chunk.pos.0,
             };
             // Highest priority jobs are at the _end_ of the queue, so negate the distance
-            -(pos.chebyshev_distance(camera_chunk_pos.0) as i32)
+            -(pos.distance_squared(camera_chunk_pos.0))
         });
     }
 }

@@ -817,6 +817,7 @@ dependencies = [
 name = "engine"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "anyhow",
  "bitfield-struct",
  "bytemuck",

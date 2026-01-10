@@ -1,13 +1,15 @@
-use dashmap::DashMap;
 use thiserror::Error;
 
-use crate::voxels::{
-    border::Border,
-    chunk::{Chunk, ChunkState, IChunkRenderState},
-    coord::{ChunkPos, WorldPos},
-    face::Face,
-    unpacked_chunk::{UnpackedChunk, UnpackedChunkResult},
-    voxel::Voxel,
+use crate::{
+    voxels::{
+        border::Border,
+        chunk::{ChunkState, IChunkRenderState},
+        coord::{ChunkPos, WorldPos},
+        face::Face,
+        unpacked_chunk::{UnpackedChunk, UnpackedChunkResult},
+        voxel::Voxel,
+    },
+    world::WorldChunks,
 };
 
 // Non-critical errors that can occur during meshing
@@ -68,7 +70,7 @@ impl ChunkMeshGeneratorInput {
     }
 
     pub fn try_from_map<T: IChunkRenderState>(
-        chunks: &DashMap<ChunkPos, Chunk<T>>,
+        chunks: &WorldChunks<T>,
         center_pos: ChunkPos,
     ) -> Result<Option<Self>, MeshGeneratorInputError> {
         let Some(chunk) = chunks.get(&center_pos) else {

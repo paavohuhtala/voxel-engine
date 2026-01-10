@@ -12,11 +12,11 @@ use crate::{
     worldgen::WorldGenerator,
 };
 
-use dashmap::DashMap;
+pub type WorldChunks<T> = dashmap::DashMap<ChunkPos, Chunk<T>, ahash::RandomState>;
 
 pub struct World<T: IChunkRenderState = ()> {
     pub chunk_loader: ChunkLoaderHandle<T>,
-    pub chunks: Arc<DashMap<ChunkPos, Chunk<T>>>,
+    pub chunks: Arc<WorldChunks<T>>,
     statistics: WorldStatistics,
 }
 
@@ -52,7 +52,7 @@ impl<T: IChunkRenderState + Send + Sync + 'static> World<T> {
         let chunks_map = initial_chunks
             .into_iter()
             .map(|(pos, data)| (pos, Chunk::from_data(pos, data)))
-            .collect::<DashMap<ChunkPos, Chunk<T>>>();
+            .collect::<WorldChunks<T>>();
 
         let chunks = Arc::new(chunks_map);
         let chunk_access = chunks.clone();

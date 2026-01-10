@@ -78,7 +78,7 @@ impl Player {
                     + Vec3::new(0.0, 100.0, 0.0);
                 let target = self
                     .camera_path
-                    .clamped_sample((self.camera_progress + 0.005).min(1.0))
+                    .clamped_sample((self.camera_progress + 0.05).min(1.0))
                     .unwrap();
 
                 (eye, target)
