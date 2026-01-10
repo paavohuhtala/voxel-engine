@@ -222,6 +222,10 @@ impl ChunkBoundsPass {
         }
     }
 
+    pub fn max_chunks(&self) -> usize {
+        self.max_chunks
+    }
+
     /// Update the vertex buffer with wireframes for the given chunk positions
     pub fn update_chunks(&mut self, queue: &wgpu::Queue, chunk_positions: &[IVec3]) {
         let chunk_count = chunk_positions.len().min(self.max_chunks);

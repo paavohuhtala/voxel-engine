@@ -5,13 +5,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, select};
+use crossbeam_channel::{Receiver, Sender, select};
 use glam::IVec3;
 
 use crate::{
     assets::blocks::BlockDatabaseSlim,
     camera::Camera,
     limits::{LOAD_DISTANCE, UNLOAD_DISTANCE},
+    loader_job_queue::{JobPriority, JobType, LoaderJobQueue},
     mesh_generation::{
         chunk_mesh_generator_input::{
             ChunkMeshGeneratorInput, MeshGeneratorInputError, MeshGeneratorWarning,
@@ -37,6 +38,9 @@ pub enum ChunkLoaderEvent<T: IChunkRenderState> {
         Option<<T::Context as IChunkRenderContext>::FlushResult>,
     ),
     ChunksUnloaded(Vec<ChunkPos>),
+    /// Fast-path for large teleports: the world was cleared and should be treated as rebuilt.
+    /// Renderers should drop any cached per-chunk state.
+    WorldReset,
 }
 
 // Used by the main thread to communicate with the chunk loader thread
@@ -45,17 +49,12 @@ pub enum ChunkLoaderCommand {
 }
 
 // Used by chunk loader workers to communicate back to the chunk loader
-pub enum ChunkWorkerEvent<T: IChunkRenderState> {
+pub enum ChunkWorkerEvent {
     /// The chunk is ready to be meshed (all neighbors are present). No further checks are needed.
     ReadyForMeshing(ChunkHandle),
     /// The chunk _might_ be ready for meshing, but the loader should verify its neighbors first.
     /// This is used to retry meshing when a neighbor was missing or in an invalid state when meshing was first attempted.
     PotentiallyReadyForMeshing(ChunkHandle),
-    /// One or more chunk meshes have been generated and are ready to be flushed to the GPU.
-    MeshesGenerated(
-        Vec<ChunkMeshUpdate>,
-        Option<<T::Context as IChunkRenderContext>::FlushResult>,
-    ),
 }
 
 pub trait WorldAccess<T: IChunkRenderState>: Send + Sync {
@@ -75,13 +74,15 @@ pub trait WorldAccess<T: IChunkRenderState>: Send + Sync {
         &self,
         chunk: &ChunkHandle,
         data: ChunkData,
-        sender: &Sender<ChunkWorkerEvent<T>>,
+        sender: &Sender<ChunkWorkerEvent>,
     ) -> bool;
     fn insert_render_state(&self, pos: ChunkPos, render_state: T);
     /// Unloads and removes the given chunk positions from the world map.
     /// Returns the positions that were actually removed.
     fn unload_chunks(&self, positions: &[ChunkPos]) -> Vec<ChunkPos>;
     fn unload_chunks_outside_distance(&self, center: ChunkPos, distance: u32) -> Vec<ChunkPos>;
+    /// Unloads all chunks and clears the world map. Intended for large teleports.
+    fn clear_all_chunks(&self);
 }
 
 impl<T: IChunkRenderState> WorldAccess<T> for WorldChunks<T> {
@@ -125,7 +126,7 @@ impl<T: IChunkRenderState> WorldAccess<T> for WorldChunks<T> {
         &self,
         chunk: &ChunkHandle,
         data: ChunkData,
-        sender: &Sender<ChunkWorkerEvent<T>>,
+        sender: &Sender<ChunkWorkerEvent>,
     ) -> bool {
         if let Some(mut existing) = self.get_mut(&chunk.pos) {
             existing.data = Some(data);
@@ -247,6 +248,16 @@ impl<T: IChunkRenderState> WorldAccess<T> for WorldChunks<T> {
 
         removed
     }
+
+    fn clear_all_chunks(&self) {
+        // Mark all chunks as unloaded first so any outstanding handles quickly stop doing work.
+        for entry in self.iter() {
+            entry.value().unload();
+        }
+
+        // Then drop everything from the map. No neighbor updates needed.
+        self.clear();
+    }
 }
 
 pub struct ChunkLoaderHandle<T: IChunkRenderState> {
@@ -263,28 +274,209 @@ impl<T: IChunkRenderState> ChunkLoaderHandle<T> {
     }
 }
 
-/// Manages loading and unloading of chunks in the world.
-/// Loading can involve generating new chunks or loading from disk.
-/// The chunk loader lives in its own thread and communicates with the main engine thread via channels.
-pub struct ChunkLoader<T: IChunkRenderState> {
+/// Manages coordination for chunk loading/meshing.
+/// Heavy camera-driven load/unload work runs on a dedicated thread so this coordinator
+/// can stay responsive to worker events (notably ReadyForMeshing).
+pub struct ChunkLoader {
     command_receiver: Receiver<ChunkLoaderCommand>,
-    worker_event_receiver: Receiver<ChunkWorkerEvent<T>>,
+    worker_event_receiver: Receiver<ChunkWorkerEvent>,
+    job_queue: Arc<LoaderJobQueue>,
+    camera: Arc<RwLock<Camera>>,
+}
+
+impl ChunkLoader {
+    pub fn start<T: IChunkRenderState>(
+        world_generator: Box<dyn WorldGenerator>,
+        block_database: Arc<BlockDatabaseSlim>,
+        world_access: Arc<dyn WorldAccess<T>>,
+        render_context: T::Context,
+    ) -> ChunkLoaderHandle<T> {
+        let job_queue = Arc::new(LoaderJobQueue::new(UNLOAD_DISTANCE as u32));
+        let (command_sender, command_receiver) = crossbeam_channel::unbounded();
+        let (camera_moved_sender, camera_moved_receiver) = crossbeam_channel::bounded(1);
+        let (worker_event_sender, worker_event_receiver) = crossbeam_channel::unbounded();
+        let (event_sender, event_receiver) = crossbeam_channel::unbounded();
+
+        let camera = Arc::new(RwLock::new(Camera::default()));
+        let camera_clone = camera.clone();
+
+        let thread = std::thread::Builder::new()
+            .name("Chunk loader".to_string())
+            .spawn(move || {
+                let world_generator = Arc::from(world_generator);
+                let offsets = generate_desired_chunk_offsets();
+
+                let (camera_shutdown_sender, camera_shutdown_receiver) =
+                    crossbeam_channel::bounded::<()>(1);
+
+                let worker_pool = ChunkLoaderWorkerPool::new(
+                    // TODO: use num_cpus crate
+                    16,
+                    worker_event_sender,
+                    event_sender.clone(),
+                    job_queue.clone(),
+                    world_generator,
+                    block_database,
+                    world_access.clone(),
+                    render_context,
+                );
+
+                // Dedicated thread for heavy camera-driven load/unload and enqueue operations.
+                // Keeps the coordinator responsive to worker events (notably ReadyForMeshing).
+                let camera_thread = {
+                    let job_queue = job_queue.clone();
+                    let camera = camera_clone.clone();
+                    let world_access = world_access.clone();
+                    let event_sender = event_sender.clone();
+                    std::thread::Builder::new()
+                        .name("Chunk loader camera".to_string())
+                        .spawn(move || {
+                            let mut camera_worker = ChunkLoaderCameraWorker {
+                                event_sender,
+                                world_access,
+                                camera_moved_receiver,
+                                desired_generation_offsets: offsets,
+                                job_queue,
+                                camera,
+
+                                previous_chunk_pos: ChunkPos::new(0, 0, 0),
+                                pending_chunk_pos: None,
+                                pending_chunk_pos_since: Instant::now(),
+
+                                boundary_slab_scratch: HashSet::new(),
+                                boundary_slab_batch: Vec::new(),
+                                generation_job_batch: Vec::new(),
+                            };
+
+                            // Do an initial pass so we enqueue around spawn without requiring a move.
+                            camera_worker.on_camera_moved();
+                            camera_worker.run(camera_shutdown_receiver);
+                        })
+                        .unwrap()
+                };
+
+                let mut chunk_loader = ChunkLoader {
+                    command_receiver,
+                    worker_event_receiver,
+                    job_queue,
+                    camera: camera_clone,
+                };
+
+                drop(worker_pool);
+                drop(camera_thread);
+
+                chunk_loader.run(camera_shutdown_sender)
+            })
+            .unwrap();
+
+        ChunkLoaderHandle {
+            command_sender,
+            event_receiver,
+            camera_moved_sender,
+            _thread_handle: thread,
+            camera,
+        }
+    }
+
+    fn get_priority_for_job(&self, pos: ChunkPos, job_type: JobType) -> JobPriority {
+        let camera_chunk_pos = {
+            let camera = self.camera.read().unwrap();
+            WorldPosF(camera.eye).to_chunk_pos()
+        };
+        let distance_in_chunks = pos.0.chebyshev_distance(camera_chunk_pos.0);
+        JobPriority {
+            distance_in_chunks,
+            job_type,
+        }
+    }
+
+    fn run(&mut self, camera_shutdown_sender: Sender<()>) {
+        loop {
+            select! {
+                recv(self.command_receiver) -> command => {
+                    match command {
+                        Err(_) | Ok(ChunkLoaderCommand::Shutdown) => {
+                            let _ = camera_shutdown_sender.try_send(());
+                            break;
+                        },
+                    }
+                }
+                recv(self.worker_event_receiver) -> event => {
+                    match event {
+                        Ok(ChunkWorkerEvent::ReadyForMeshing(chunk)) => {
+                            if chunk.try_transition(ChunkState::Loaded, ChunkState::InMeshingQueue) {
+                                let priority = self.get_priority_for_job(chunk.pos, JobType::Meshing);
+                                self.job_queue.push(ChunkLoaderJob::GenerateMesh(chunk), priority);
+                            }
+                        }
+                        Ok(ChunkWorkerEvent::PotentiallyReadyForMeshing(chunk)) => {
+                            if chunk.neighbor_state.is_ready_for_meshing()
+                                && chunk.try_transition(ChunkState::Loaded, ChunkState::InMeshingQueue)
+                            {
+                                let priority = self.get_priority_for_job(chunk.pos, JobType::Meshing);
+                                self.job_queue.push(ChunkLoaderJob::GenerateMesh(chunk), priority);
+                            }
+                        }
+                        Err(_) => {
+                            // Channel closed, should not happen
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct ChunkLoaderCameraWorker<T: IChunkRenderState> {
     event_sender: Sender<ChunkLoaderEvent<T>>,
+    world_access: Arc<dyn WorldAccess<T>>,
+    camera_moved_receiver: Receiver<()>,
+    desired_generation_offsets: Vec<IVec3>,
+    job_queue: Arc<LoaderJobQueue>,
+    camera: Arc<RwLock<Camera>>,
+
     previous_chunk_pos: ChunkPos,
     pending_chunk_pos: Option<ChunkPos>,
     pending_chunk_pos_since: Instant,
-    world_access: Arc<dyn WorldAccess<T>>,
-    camera_moved_receiver: Receiver<()>,
-    worker_pool: ChunkLoaderWorkerPool,
-    desired_generation_offsets: Vec<IVec3>,
-    job_queue: Vec<ChunkLoaderJob>,
-    camera: Arc<RwLock<Camera>>,
 
     boundary_slab_scratch: HashSet<ChunkPos>,
     boundary_slab_batch: Vec<ChunkPos>,
+    generation_job_batch: Vec<(ChunkLoaderJob, JobPriority)>,
 }
 
-impl<T: IChunkRenderState> ChunkLoader<T> {
+impl<T: IChunkRenderState> ChunkLoaderCameraWorker<T> {
+    const MAX_GENERATION_JOB_BATCH: usize = 16 * 1024;
+
+    fn flush_generation_jobs(&mut self, total_enqueued: &mut usize, batches: &mut usize) {
+        if self.generation_job_batch.is_empty() {
+            return;
+        }
+
+        let count = self.generation_job_batch.len();
+        *total_enqueued += count;
+        *batches += 1;
+
+        self.job_queue
+            .push_batch(self.generation_job_batch.drain(..));
+    }
+
+    fn run(&mut self, shutdown_receiver: Receiver<()>) {
+        loop {
+            select! {
+                recv(shutdown_receiver) -> _ => {
+                    break;
+                }
+                recv(self.camera_moved_receiver) -> msg => {
+                    if msg.is_err() {
+                        break;
+                    }
+                    self.on_camera_moved();
+                }
+            }
+        }
+    }
+
     fn for_each_boundary_slab_position(
         &mut self,
         center: IVec3,
@@ -334,128 +526,6 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
         self.boundary_slab_scratch = positions;
     }
 
-    pub fn start(
-        world_generator: Box<dyn WorldGenerator>,
-        block_database: Arc<BlockDatabaseSlim>,
-        world_access: Arc<dyn WorldAccess<T>>,
-        render_context: T::Context,
-    ) -> ChunkLoaderHandle<T> {
-        let (command_sender, command_receiver) = crossbeam_channel::unbounded();
-        let (camera_moved_sender, camera_moved_receiver) = crossbeam_channel::bounded(1);
-        let (worker_event_sender, worker_event_receiver) = crossbeam_channel::unbounded();
-        let (event_sender, event_receiver) = crossbeam_channel::unbounded();
-
-        let camera = Arc::new(RwLock::new(Camera::default()));
-        let camera_clone = camera.clone();
-
-        let thread = std::thread::Builder::new()
-            .name("Chunk loader".to_string())
-            .spawn(move || {
-                let world_generator = Arc::from(world_generator);
-                let offsets = generate_desired_chunk_offsets();
-
-                let worker_pool = ChunkLoaderWorkerPool::new(
-                    // TODO: use num_cpus crate
-                    16,
-                    worker_event_sender,
-                    world_generator,
-                    block_database,
-                    world_access.clone(),
-                    render_context,
-                );
-
-                let mut chunk_loader = ChunkLoader {
-                    command_receiver,
-                    worker_event_receiver,
-                    event_sender,
-                    previous_chunk_pos: ChunkPos::new(0, 0, 0),
-                    pending_chunk_pos: None,
-                    pending_chunk_pos_since: Instant::now(),
-                    world_access,
-                    camera_moved_receiver,
-                    desired_generation_offsets: offsets,
-                    worker_pool,
-                    job_queue: Vec::new(),
-                    camera: camera_clone,
-
-                    boundary_slab_scratch: HashSet::new(),
-                    boundary_slab_batch: Vec::new(),
-                };
-
-                chunk_loader.run()
-            })
-            .unwrap();
-
-        ChunkLoaderHandle {
-            command_sender,
-            event_receiver,
-            camera_moved_sender,
-            _thread_handle: thread,
-            camera,
-        }
-    }
-
-    fn run(&mut self) {
-        loop {
-            select! {
-                recv(self.command_receiver) -> command => {
-                    match command {
-                        Err(_) | Ok(ChunkLoaderCommand::Shutdown) => {
-                            break;
-                        },
-                    }
-                }
-                recv(self.worker_event_receiver) -> event => {
-                    match event {
-                        Ok(ChunkWorkerEvent::ReadyForMeshing(chunk)) => {
-                            if chunk.try_transition(ChunkState::Loaded, ChunkState::InMeshingQueue) {
-                                self.job_queue.push(ChunkLoaderJob::GenerateMesh(chunk));
-                            }
-                        }
-                        Ok(ChunkWorkerEvent::PotentiallyReadyForMeshing(chunk)) => {
-                            if chunk.neighbor_state.is_ready_for_meshing()
-                                && chunk.try_transition(ChunkState::Loaded, ChunkState::InMeshingQueue)
-                            {
-                                self.job_queue.push(ChunkLoaderJob::GenerateMesh(chunk));
-                            }
-                        }
-                        Ok(ChunkWorkerEvent::MeshesGenerated(updates, flush_results)) => {
-                            self.event_sender.send(ChunkLoaderEvent::ChunkMeshesReady(updates, flush_results)).unwrap();
-                        }
-                        Err(_) => {
-                            // Channel closed, should not happen
-                            break;
-                        }
-                    }
-                }
-                recv(self.camera_moved_receiver) -> _ => {
-                    self.on_camera_moved();
-                }
-                // Use a short timeout to ensure give_jobs_to_workers is called regularly
-                // even when no events are pending
-                default(std::time::Duration::from_millis(1)) => {}
-            }
-            self.give_jobs_to_workers();
-        }
-    }
-
-    fn give_jobs_to_workers(&mut self) {
-        // While there are jobs in the queue and the channel is not full, send jobs to workers
-        while !self.job_queue.is_empty() {
-            let job = self.job_queue.last().cloned().unwrap();
-            match self.worker_pool.job_sender.try_send(job) {
-                Ok(_) => {
-                    // Worker accepted the job, remove it from the queue
-                    self.job_queue.pop();
-                }
-                Err(_) => {
-                    // The channel is full, stop trying to send more jobs
-                    break;
-                }
-            }
-        }
-    }
-
     // When the camera moves (and on startup), we need to potentially load/unload chunks
     fn on_camera_moved(&mut self) {
         let current_chunk_pos = {
@@ -491,39 +561,54 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
         let previous_chunk_pos = self.previous_chunk_pos;
         let delta = current_chunk_pos.0 - previous_chunk_pos.0;
         let small_step = delta.x.abs() <= 1 && delta.y.abs() <= 1 && delta.z.abs() <= 1;
+        let jump_distance = delta.abs().max_element();
+        // If the camera moved more than twice the unload distance, the kept regions don't overlap.
+        // In that case it's faster to clear everything and rebuild.
+        let no_overlap_teleport = !small_step && jump_distance > 2 * UNLOAD_DISTANCE;
 
         self.previous_chunk_pos = current_chunk_pos;
 
-        // Prune generation and meshing queues from chunks that are no longer desired
-        self.job_queue.retain(|job| {
-            let chunk = job.chunk_handle();
-            let distance = chunk.pos.0.chebyshev_distance(current_chunk_pos.0);
-            // If the chunk is going to be unloaded, we don't have to bother resetting its state
-            distance <= (UNLOAD_DISTANCE as u32)
-        });
-
         // Unload chunks that are now out of range.
-        let unloaded = if small_step {
-            self.boundary_slab_batch.clear();
-            self.for_each_boundary_slab_position(
-                previous_chunk_pos.0,
-                delta,
-                UNLOAD_DISTANCE,
-                -1,
-                |this, pos| this.boundary_slab_batch.push(pos),
-            );
-            self.world_access.unload_chunks(&self.boundary_slab_batch)
-        } else {
-            // Fallback for large jumps/teleports: scan the whole map.
-            self.world_access
-                .unload_chunks_outside_distance(current_chunk_pos, UNLOAD_DISTANCE as u32)
-        };
+        if no_overlap_teleport {
+            let removed_jobs = self.job_queue.clear();
+            self.world_access.clear_all_chunks();
 
-        self.event_sender
-            .send(ChunkLoaderEvent::ChunksUnloaded(unloaded))
-            .unwrap();
+            log::info!(
+                "Large teleport detected ({}) chunks: cleared world and {} queued jobs",
+                jump_distance,
+                removed_jobs
+            );
+
+            self.event_sender
+                .send(ChunkLoaderEvent::WorldReset)
+                .unwrap();
+        } else {
+            let unloaded = if small_step {
+                self.boundary_slab_batch.clear();
+                self.for_each_boundary_slab_position(
+                    previous_chunk_pos.0,
+                    delta,
+                    UNLOAD_DISTANCE,
+                    -1,
+                    |this, pos| this.boundary_slab_batch.push(pos),
+                );
+                self.world_access.unload_chunks(&self.boundary_slab_batch)
+            } else {
+                // Fallback for large jumps/teleports: scan the whole map.
+                self.world_access
+                    .unload_chunks_outside_distance(current_chunk_pos, UNLOAD_DISTANCE as u32)
+            };
+
+            self.event_sender
+                .send(ChunkLoaderEvent::ChunksUnloaded(unloaded))
+                .unwrap();
+        }
 
         // Enqueue new chunks for generation
+        self.generation_job_batch.clear();
+        let mut total_enqueued = 0usize;
+        let mut batches = 0usize;
+
         if small_step {
             self.for_each_boundary_slab_position(
                 current_chunk_pos.0,
@@ -532,53 +617,75 @@ impl<T: IChunkRenderState> ChunkLoader<T> {
                 1,
                 |this, chunk_pos| {
                     if !this.world_access.exists(chunk_pos) {
+                        let distance_in_chunks =
+                            chunk_pos.0.chebyshev_distance(current_chunk_pos.0);
+                        let priority = JobPriority {
+                            distance_in_chunks,
+                            job_type: JobType::Generation,
+                        };
                         let chunk = this.world_access.insert_initial_chunk(chunk_pos);
                         chunk.set_state(ChunkState::InGenerationQueue);
-                        this.job_queue.push(ChunkLoaderJob::GenerateChunk(chunk));
+                        this.generation_job_batch
+                            .push((ChunkLoaderJob::GenerateChunk(chunk), priority));
+
+                        if this.generation_job_batch.len() >= Self::MAX_GENERATION_JOB_BATCH {
+                            this.flush_generation_jobs(&mut total_enqueued, &mut batches);
+                        }
                     }
                 },
             );
         } else {
             // Fallback for large jumps/teleports: scan the whole cube.
-            for offset in &self.desired_generation_offsets {
-                let chunk_pos = current_chunk_pos + ChunkPos(*offset);
+            let offsets_len = self.desired_generation_offsets.len();
+            for i in 0..offsets_len {
+                let offset = self.desired_generation_offsets[i];
+                let chunk_pos = current_chunk_pos + ChunkPos(offset);
                 if !self.world_access.exists(chunk_pos) {
                     let chunk = self.world_access.insert_initial_chunk(chunk_pos);
                     chunk.set_state(ChunkState::InGenerationQueue);
-                    self.job_queue.push(ChunkLoaderJob::GenerateChunk(chunk));
+                    let distance_in_chunks = chunk_pos.0.chebyshev_distance(current_chunk_pos.0);
+                    let priority = JobPriority {
+                        distance_in_chunks,
+                        job_type: JobType::Generation,
+                    };
+                    self.generation_job_batch
+                        .push((ChunkLoaderJob::GenerateChunk(chunk), priority));
+
+                    if self.generation_job_batch.len() >= Self::MAX_GENERATION_JOB_BATCH {
+                        self.flush_generation_jobs(&mut total_enqueued, &mut batches);
+                    }
                 }
             }
         }
 
-        // Sort the job queue so that chunks closer to the camera are processed first
-        let camera_chunk_pos = current_chunk_pos;
-        self.job_queue.sort_unstable_by_key(|job| {
-            let pos = match job {
-                ChunkLoaderJob::GenerateChunk(chunk) => chunk.pos.0,
-                ChunkLoaderJob::GenerateMesh(chunk) => chunk.pos.0,
-            };
-            // Highest priority jobs are at the _end_ of the queue, so negate the distance
-            -(pos.distance_squared(camera_chunk_pos.0))
-        });
+        self.flush_generation_jobs(&mut total_enqueued, &mut batches);
+
+        if total_enqueued > 0 {
+            log::info!(
+                "Enqueued {} chunk generation jobs in {} batches",
+                total_enqueued,
+                batches
+            );
+        }
     }
 }
 
 struct ChunkLoaderWorkerPool {
     _worker_handles: Vec<JoinHandle<()>>,
-    job_sender: Sender<ChunkLoaderJob>,
 }
 
 impl ChunkLoaderWorkerPool {
+    #[allow(clippy::too_many_arguments)]
     pub fn new<T: IChunkRenderState>(
         num_workers: usize,
-        worker_event_sender: Sender<ChunkWorkerEvent<T>>,
+        worker_event_sender: Sender<ChunkWorkerEvent>,
+        loader_event_sender: Sender<ChunkLoaderEvent<T>>,
+        job_queue: Arc<LoaderJobQueue>,
         world_generator: Arc<dyn WorldGenerator>,
         block_database: Arc<BlockDatabaseSlim>,
         chunk_access: Arc<dyn WorldAccess<T>>,
         render_context: T::Context,
     ) -> Self {
-        let (command_sender, command_receiver) = crossbeam_channel::bounded(num_workers);
-
         let mut worker_handles = Vec::new();
 
         for _ in 0..num_workers {
@@ -586,8 +693,9 @@ impl ChunkLoaderWorkerPool {
             let block_database = block_database.clone();
             let chunk_access = chunk_access.clone();
             let render_context = render_context.clone();
-            let command_receiver = command_receiver.clone();
             let worker_event_sender = worker_event_sender.clone();
+            let loader_event_sender = loader_event_sender.clone();
+            let job_queue = job_queue.clone();
 
             let handle = std::thread::Builder::new()
                 .name("Chunk loader worker".to_string())
@@ -597,8 +705,9 @@ impl ChunkLoaderWorkerPool {
                         block_database,
                         chunk_access,
                         render_context,
-                        command_receiver,
+                        job_queue,
                         worker_event_sender,
+                        loader_event_sender,
                     );
 
                     worker.process_jobs();
@@ -608,13 +717,12 @@ impl ChunkLoaderWorkerPool {
 
         ChunkLoaderWorkerPool {
             _worker_handles: worker_handles,
-            job_sender: command_sender,
         }
     }
 }
 
 #[derive(Clone)]
-enum ChunkLoaderJob {
+pub enum ChunkLoaderJob {
     GenerateChunk(ChunkHandle),
     GenerateMesh(ChunkHandle),
 }
@@ -639,8 +747,10 @@ struct ChunkLoaderWorker<T: IChunkRenderState> {
     mesh_generator: Arc<GreedyMesher>,
     chunk_access: Arc<dyn WorldAccess<T>>,
     render_context: T::Context,
-    receiver: Receiver<ChunkLoaderJob>,
-    event_sender: Sender<ChunkWorkerEvent<T>>,
+    job_queue: Arc<LoaderJobQueue>,
+    job_notifications: Receiver<()>,
+    event_sender: Sender<ChunkWorkerEvent>,
+    loader_event_sender: Sender<ChunkLoaderEvent<T>>,
     pending_chunks: Vec<ChunkMeshUpdate>,
     last_flush: Instant,
 }
@@ -651,18 +761,22 @@ impl<T: IChunkRenderState> ChunkLoaderWorker<T> {
         block_database: Arc<BlockDatabaseSlim>,
         chunk_access: Arc<dyn WorldAccess<T>>,
         render_context: T::Context,
-        receiver: Receiver<ChunkLoaderJob>,
-        event_sender: Sender<ChunkWorkerEvent<T>>,
+        job_queue: Arc<LoaderJobQueue>,
+        event_sender: Sender<ChunkWorkerEvent>,
+        loader_event_sender: Sender<ChunkLoaderEvent<T>>,
     ) -> Self {
         let mesh_generator = Arc::new(GreedyMesher::new(block_database));
+        let job_notifications = job_queue.subscribe();
 
         ChunkLoaderWorker {
             world_generator,
             mesh_generator,
             chunk_access,
             render_context,
-            receiver,
+            job_queue,
+            job_notifications,
             event_sender,
+            loader_event_sender,
             pending_chunks: Vec::new(),
             last_flush: Instant::now(),
         }
@@ -727,8 +841,8 @@ impl<T: IChunkRenderState> ChunkLoaderWorker<T> {
             // The chunk doesn't need a mesh, since it's either empty or fully occluded.
             // Mark it as ready-empty and enqueue for renderer flush.
             if chunk.try_transition(ChunkState::Meshing, ChunkState::WaitingForRendererFlush) {
-                self.event_sender
-                    .send(ChunkWorkerEvent::MeshesGenerated(
+                self.loader_event_sender
+                    .send(ChunkLoaderEvent::ChunkMeshesReady(
                         vec![ChunkMeshUpdate {
                             handle: chunk,
                             id: None,
@@ -751,29 +865,19 @@ impl<T: IChunkRenderState> ChunkLoaderWorker<T> {
                 handle: chunk,
                 id: Some(id),
             });
-
-            if self.pending_chunks.len() >= 16 {
-                self.try_flush();
-            }
         }
     }
 
-    fn try_flush(&mut self) {
-        if self.pending_chunks.is_empty() {
-            return;
-        }
-
+    fn flush_pending(&mut self) {
         log::debug!(
             "Flushing {} pending chunk meshes",
             self.pending_chunks.len()
         );
 
         let pending_meshes = std::mem::take(&mut self.pending_chunks);
-        let sender = self.event_sender.clone();
-
         let results = self.render_context.flush();
-        sender
-            .send(ChunkWorkerEvent::MeshesGenerated(
+        self.loader_event_sender
+            .send(ChunkLoaderEvent::ChunkMeshesReady(
                 pending_meshes,
                 Some(results),
             ))
@@ -784,25 +888,42 @@ impl<T: IChunkRenderState> ChunkLoaderWorker<T> {
 
     pub fn process_jobs(&mut self) {
         loop {
-            if !self.pending_chunks.is_empty()
-                && self.last_flush.elapsed() >= Duration::from_millis(30)
-            {
-                self.try_flush();
-            }
+            if let Some(job) = self.job_queue.pop() {
+                let position = match &job {
+                    ChunkLoaderJob::GenerateChunk(chunk) => chunk.pos,
+                    ChunkLoaderJob::GenerateMesh(chunk) => chunk.pos,
+                };
 
-            match self.receiver.recv_timeout(Duration::from_millis(5)) {
-                Ok(ChunkLoaderJob::GenerateChunk(chunk)) => {
-                    self.generate_chunk(chunk);
-                }
-                Ok(ChunkLoaderJob::GenerateMesh(chunk)) => {
-                    self.generate_mesh(chunk);
-                }
-                Err(RecvTimeoutError::Timeout) => {
+                // Verify the chunk still exists
+                if !self.chunk_access.exists(position) {
                     continue;
                 }
-                Err(RecvTimeoutError::Disconnected) => {
-                    break;
+
+                match job {
+                    ChunkLoaderJob::GenerateChunk(chunk) => {
+                        self.generate_chunk(chunk);
+                    }
+                    ChunkLoaderJob::GenerateMesh(chunk) => {
+                        self.generate_mesh(chunk);
+                    }
                 }
+
+                let should_flush_time = self.last_flush.elapsed() >= Duration::from_millis(30);
+                let should_flush_count = self.pending_chunks.len() >= 512;
+
+                if !self.pending_chunks.is_empty() && (should_flush_time || should_flush_count) {
+                    self.flush_pending();
+                }
+            } else {
+                if !self.pending_chunks.is_empty() {
+                    // We have time, so flush any pending meshes
+                    self.flush_pending();
+                }
+
+                // Block until notified of new jobs
+                let _ = self
+                    .job_notifications
+                    .recv_timeout(Duration::from_millis(5));
             }
         }
     }

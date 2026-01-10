@@ -19,6 +19,7 @@ pub mod config;
 pub mod game_loop;
 pub mod gameplay;
 pub mod limits;
+pub mod loader_job_queue;
 pub mod math;
 pub mod memory;
 pub mod mesh_generation;

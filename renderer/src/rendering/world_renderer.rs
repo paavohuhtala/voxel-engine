@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    cmp::Ordering,
+    collections::{BinaryHeap, HashMap},
+    sync::Arc,
+};
 
 use anyhow::Context;
 use bytemuck::{Pod, Zeroable};
@@ -41,6 +45,27 @@ use crate::{
         texture_manager::TextureManager,
     },
 };
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+struct DebugChunkCandidate {
+    dist: i32,
+    pos: [i32; 3],
+}
+
+impl Ord for DebugChunkCandidate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Max-heap by distance; break ties by position for determinism.
+        self.dist
+            .cmp(&other.dist)
+            .then_with(|| self.pos.cmp(&other.pos))
+    }
+}
+
+impl PartialOrd for DebugChunkCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 pub struct ChunkRenderState {
     pub mesh: ChunkMesh,
@@ -201,6 +226,88 @@ pub struct WorldRendererStatistics {
 }
 
 impl WorldRenderer {
+    fn camera_chunk_pos(&self) -> IVec3 {
+        let eye = self.camera.interpolated_camera.eye;
+
+        // Match engine's chunking: floor division for negatives.
+        fn floor_div_16(v: f32) -> i32 {
+            (v / 16.0).floor() as i32
+        }
+
+        IVec3::new(
+            floor_div_16(eye.x),
+            floor_div_16(eye.y),
+            floor_div_16(eye.z),
+        )
+    }
+
+    fn collect_nearest_debug_chunk_positions(&self) -> Vec<IVec3> {
+        let max = self.chunk_bounds_pass.max_chunks();
+        let camera_chunk = self.camera_chunk_pos();
+        let mut heap: BinaryHeap<DebugChunkCandidate> = BinaryHeap::new();
+
+        for pos in self.rendered_chunks.keys() {
+            let p = pos.0;
+            let dist = (p - camera_chunk).abs().max_element();
+            let candidate = DebugChunkCandidate {
+                dist,
+                pos: p.to_array(),
+            };
+
+            if heap.len() < max {
+                heap.push(candidate);
+            } else if let Some(worst) = heap.peek().copied()
+                && dist < worst.dist
+            {
+                let _ = heap.pop();
+                heap.push(candidate);
+            }
+        }
+
+        let mut picked = heap.into_vec();
+        picked.sort_unstable_by_key(|c| c.dist);
+        picked
+            .into_iter()
+            .map(|c| IVec3::from_array(c.pos))
+            .collect()
+    }
+
+    fn collect_nearest_debug_chunk_aabbs(&self) -> Vec<(IVec3, AABB8)> {
+        let max = self.chunk_bounds_pass.max_chunks();
+        let camera_chunk = self.camera_chunk_pos();
+        let mut heap: BinaryHeap<DebugChunkCandidate> = BinaryHeap::new();
+
+        for pos in self.rendered_chunk_aabbs.keys() {
+            let p = pos.0;
+            let dist = (p - camera_chunk).abs().max_element();
+            let candidate = DebugChunkCandidate {
+                dist,
+                pos: p.to_array(),
+            };
+
+            if heap.len() < max {
+                heap.push(candidate);
+            } else if let Some(worst) = heap.peek().copied()
+                && dist < worst.dist
+            {
+                let _ = heap.pop();
+                heap.push(candidate);
+            }
+        }
+
+        let mut picked = heap.into_vec();
+        picked.sort_unstable_by_key(|c| c.dist);
+        let mut out = Vec::with_capacity(picked.len());
+        for c in picked {
+            let pos = IVec3::from_array(c.pos);
+            if let Some(aabb) = self.rendered_chunk_aabbs.get(&ChunkPos(pos)) {
+                out.push((pos, *aabb));
+            }
+        }
+
+        out
+    }
+
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -319,6 +426,10 @@ impl WorldRenderer {
                         self.rendered_chunk_aabbs.remove(&pos);
                     }
                 }
+                ChunkLoaderEvent::WorldReset => {
+                    self.rendered_chunks.clear();
+                    self.rendered_chunk_aabbs.clear();
+                }
             }
         }
     }
@@ -367,16 +478,11 @@ impl WorldRenderer {
         // Render chunk bounds wireframes if enabled
         if self.show_chunk_bounds {
             if self.use_mesh_aabb_for_bounds {
-                let chunks: Vec<(IVec3, AABB8)> = self
-                    .rendered_chunk_aabbs
-                    .iter()
-                    .map(|(pos, aabb)| (pos.0, *aabb))
-                    .collect();
+                let chunks = self.collect_nearest_debug_chunk_aabbs();
                 self.chunk_bounds_pass
                     .update_chunk_aabbs(&self.queue, &chunks);
             } else {
-                let chunk_positions: Vec<IVec3> =
-                    self.rendered_chunks.keys().map(|pos| pos.0).collect();
+                let chunk_positions = self.collect_nearest_debug_chunk_positions();
                 self.chunk_bounds_pass
                     .update_chunks(&self.queue, &chunk_positions);
             }

@@ -17,7 +17,7 @@ pub fn generate_desired_chunk_offsets() -> Vec<IVec3> {
         }
     }
 
-    offsets.sort_unstable_by_key(|offset| -offset.length_squared());
+    offsets.sort_unstable_by_key(|offset| offset.length_squared());
     offsets
 }
 
