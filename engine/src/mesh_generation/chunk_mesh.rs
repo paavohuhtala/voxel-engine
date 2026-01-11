@@ -109,7 +109,8 @@ impl PackedVoxelFace {
 pub struct ChunkMeshData {
     pub position: ChunkPos,
     pub aabb: AABB8,
-    pub faces: Vec<PackedVoxelFace>,
+    pub opaque_faces: Vec<PackedVoxelFace>,
+    pub alpha_cutout_faces: Vec<PackedVoxelFace>,
 }
 
 impl ChunkMeshData {
@@ -121,7 +122,12 @@ impl ChunkMeshData {
         ChunkMeshData {
             position,
             aabb: AABB8::new(U8Vec3::splat(0), U8Vec3::splat(15)),
-            faces: Vec::new(),
+            opaque_faces: Vec::new(),
+            alpha_cutout_faces: Vec::new(),
         }
+    }
+
+    pub fn total_faces(&self) -> usize {
+        self.opaque_faces.len() + self.alpha_cutout_faces.len()
     }
 }

@@ -2,9 +2,9 @@
 struct Chunk {
     position: vec4<i32>,
     face_byte_offset: u32,
-    face_count: u32,
+    total_face_count: u32,
+    opaque_face_count: u32,
     aabb: u32,
-    padding: u32,
 }
 
 struct Camera {

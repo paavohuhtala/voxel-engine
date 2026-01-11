@@ -661,7 +661,7 @@ impl<T: IChunkRenderState> ChunkLoaderCameraWorker<T> {
         self.flush_generation_jobs(&mut total_enqueued, &mut batches);
 
         if total_enqueued > 0 {
-            log::info!(
+            log::debug!(
                 "Enqueued {} chunk generation jobs in {} batches",
                 total_enqueued,
                 batches

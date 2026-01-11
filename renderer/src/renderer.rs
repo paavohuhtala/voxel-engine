@@ -27,6 +27,11 @@ pub struct Renderer {
     is_surface_configured: bool,
     window: Arc<Window>,
     pub world_renderer: WorldRenderer,
+    pub enabled_features: Arc<EnabledFeatures>,
+}
+
+pub struct EnabledFeatures {
+    pub multi_draw_indirect_count: bool,
 }
 
 // This is essentially a copy of egui_wgpu::ScreenDescriptor to avoid adding a dependency on egui_wgpu
@@ -58,12 +63,22 @@ impl Renderer {
                 force_fallback_adapter: false,
             })
             .await?;
+
+        let supports_multi_draw_indirect_count = adapter
+            .features()
+            .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT);
+
+        let mut required_features = wgpu::Features::INDIRECT_FIRST_INSTANCE
+            | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+
+        if supports_multi_draw_indirect_count {
+            required_features |= wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
+        }
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE
-                    | wgpu::Features::TEXTURE_BINDING_ARRAY
-                    | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
+                required_features,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 required_limits: wgpu::Limits {
                     max_binding_array_elements_per_shader_stage: u16::MAX as u32,
@@ -119,7 +134,17 @@ impl Renderer {
             "Depth texture",
         );
 
-        let world_renderer = WorldRenderer::new(&device, &queue, size, block_database.clone());
+        let enabled_features = Arc::new(EnabledFeatures {
+            multi_draw_indirect_count: supports_multi_draw_indirect_count,
+        });
+
+        let world_renderer = WorldRenderer::new(
+            &device,
+            &queue,
+            enabled_features.clone(),
+            size,
+            block_database.clone(),
+        );
 
         Ok(Renderer {
             _config: config_manager,
@@ -131,6 +156,7 @@ impl Renderer {
             is_surface_configured: false,
             window,
             world_renderer,
+            enabled_features,
         })
     }
 

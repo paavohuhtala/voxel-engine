@@ -106,6 +106,23 @@ pub struct GpuBufferArray<T> {
 }
 
 impl<T> GpuBufferArray<T> {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &str,
+        usages: wgpu::BufferUsages,
+        element_count: usize,
+    ) -> Self {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            mapped_at_creation: false,
+            size: (size_of::<T>() * element_count) as u64,
+            usage: usages,
+        });
+
+        Self::from_buffer(queue, buffer)
+    }
+
     pub fn from_buffer(queue: &wgpu::Queue, buffer: wgpu::Buffer) -> Self {
         GpuBufferArray {
             inner: buffer,
@@ -124,6 +141,10 @@ impl<T> GpuBufferArray<T> {
 
     pub fn capacity(&self) -> u64 {
         self.inner.size() / size_of::<T>() as u64
+    }
+
+    pub fn binding<'a>(&'a self) -> wgpu::BufferBinding<'a> {
+        self.inner.as_entire_buffer_binding()
     }
 }
 

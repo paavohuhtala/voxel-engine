@@ -1,20 +1,35 @@
 use std::array;
 
+use bytemuck::{Pod, Zeroable};
 use image::{
     RgbaImage,
     imageops::{self, FilterType},
 };
 use wgpu::{TexelCopyBufferLayout, TexelCopyTextureInfo};
 
-use engine::assets::world_textures::WorldTextures;
+use engine::assets::world_textures::{TextureTransparency, WorldTextures};
+
+use crate::rendering::memory::typed_buffer::GpuBufferArray;
 
 const MAX_TEXTURES: usize = 256;
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct TextureAttributes(pub u32);
+
+impl TextureAttributes {
+    pub fn from_transparency(transparency: TextureTransparency) -> Self {
+        TextureAttributes(transparency as u32)
+    }
+}
 
 pub struct TextureManager {
     queue: wgpu::Queue,
     array_texture: wgpu::Texture,
     sampler: wgpu::Sampler,
     view: wgpu::TextureView,
+    texture_attributes: Vec<TextureAttributes>,
+    texture_attributes_buffer: GpuBufferArray<TextureAttributes>,
 }
 
 pub const TEXTURE_SIZE: usize = 16;
@@ -71,11 +86,21 @@ impl TextureManager {
             ..Default::default()
         });
 
+        let texture_attributes_buffer = GpuBufferArray::new(
+            device,
+            queue,
+            "Texture Attributes Buffer",
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            MAX_TEXTURES,
+        );
+
         Self {
             queue: queue.clone(),
             array_texture,
             sampler,
             view,
+            texture_attributes: Vec::new(),
+            texture_attributes_buffer,
         }
     }
 
@@ -125,10 +150,19 @@ impl TextureManager {
         })
     }
 
+    fn upload_texture_attributes(&mut self) {
+        self.texture_attributes_buffer
+            .write_data(&self.texture_attributes);
+    }
+
     pub fn load_all_textures(&mut self, world_textures: &WorldTextures) -> anyhow::Result<()> {
         for (index, texture) in world_textures.textures.iter().enumerate() {
-            self.upload_texture(index as u16, texture);
+            self.upload_texture(index as u16, &texture.data);
+            self.texture_attributes
+                .push(TextureAttributes::from_transparency(texture.transparency));
         }
+
+        self.upload_texture_attributes();
 
         Ok(())
     }
@@ -139,5 +173,9 @@ impl TextureManager {
 
     pub fn sampler(&self) -> &wgpu::Sampler {
         &self.sampler
+    }
+
+    pub fn texture_attributes_buffer(&self) -> &GpuBufferArray<TextureAttributes> {
+        &self.texture_attributes_buffer
     }
 }

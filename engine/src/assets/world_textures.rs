@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use image::RgbaImage;
+use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WorldTextureHandle(pub u16);
@@ -10,10 +11,22 @@ impl WorldTextureHandle {
     pub const ERROR: Self = WorldTextureHandle(0);
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub enum TextureTransparency {
+    Opaque = 0,
+    AlphaCutout,
+    AlphaBlend,
+}
+
+pub struct TextureImage {
+    pub data: RgbaImage,
+    pub transparency: TextureTransparency,
+}
+
 pub struct WorldTextures {
     // TODO: Do we have to keep textures in both RAM and VRAM?
     // I guess with Minecraft-style textures that doesn't really matter
-    pub textures: Vec<RgbaImage>,
+    pub textures: Vec<TextureImage>,
     base_path: std::path::PathBuf,
 }
 
@@ -25,11 +38,14 @@ impl WorldTextures {
         };
 
         let invalid_texture = generate_invalid_texture_checkerboard();
-        world_textures.allocate(invalid_texture);
+        world_textures.allocate(TextureImage {
+            data: invalid_texture,
+            transparency: TextureTransparency::Opaque,
+        });
         world_textures
     }
 
-    fn allocate(&mut self, texture: RgbaImage) -> WorldTextureHandle {
+    fn allocate(&mut self, texture: TextureImage) -> WorldTextureHandle {
         let index = self.textures.len();
         self.textures.push(texture);
         WorldTextureHandle(index as u16)
@@ -39,10 +55,14 @@ impl WorldTextures {
     pub fn load_from_path_and_allocate(
         &mut self,
         path: &str,
+        transparency: TextureTransparency,
     ) -> anyhow::Result<WorldTextureHandle> {
         let path = self.base_path.join(path);
         let texture = Self::load_texture(&path)?;
-        Ok(self.allocate(texture))
+        Ok(self.allocate(TextureImage {
+            data: texture,
+            transparency,
+        }))
     }
 
     fn load_texture(path: &Path) -> anyhow::Result<RgbaImage> {

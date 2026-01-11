@@ -27,6 +27,7 @@ use engine::{
 use wgpu::{CommandEncoder, wgt::CommandEncoderDescriptor};
 
 use crate::{
+    renderer::EnabledFeatures,
     renderer_types::RenderWorld,
     rendering::{
         buffer_update_batcher::BufferUpdateBatcher,
@@ -111,10 +112,10 @@ impl IChunkRenderState for ChunkRenderState {
             &mut context.batcher,
             &GpuChunk {
                 position: mesh.position.0.extend(0),
-                face_count: mesh_data.faces.len() as u32,
+                total_face_count: mesh_data.total_faces() as u32,
                 face_byte_offset: mesh.faces_handle.byte_offset(),
+                opaque_face_count: mesh_data.opaque_faces.len() as u32,
                 aabb,
-                _padding: 0,
             },
         );
 
@@ -175,19 +176,23 @@ impl WorldBuffers {
         batcher: &mut BufferUpdateBatcher,
         mesh_data: &ChunkMeshData,
     ) -> ChunkMesh {
+        let mut all_faces = Vec::new();
+        all_faces.extend_from_slice(&mesh_data.opaque_faces);
+        all_faces.extend_from_slice(&mesh_data.alpha_cutout_faces);
+
         let face_allocation = self
             .faces
             .clone()
-            .allocate(mesh_data.faces.len() as u32)
+            .allocate(all_faces.len() as u32)
             .with_context(|| {
                 format!(
                     "Failed to allocate {} faces for chunk mesh",
-                    mesh_data.faces.len()
+                    all_faces.len()
                 )
             })
             .expect("Failed to allocate face buffer for chunk mesh");
 
-        face_allocation.write_data_batched(batcher, &mesh_data.faces);
+        face_allocation.write_data_batched(batcher, &all_faces);
 
         ChunkMesh {
             position: mesh_data.position,
@@ -311,6 +316,7 @@ impl WorldRenderer {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        enabled_features: Arc<EnabledFeatures>,
         size: Resolution,
         block_database: Arc<BlockDatabase>,
     ) -> Self {
@@ -325,7 +331,8 @@ impl WorldRenderer {
             .load_all_textures(&block_database.world_textures)
             .expect("Failed to load block materials");
 
-        let world_geo_pass = WorldGeometryPass::new(device, queue, &buffers, &texture_manager);
+        let world_geo_pass =
+            WorldGeometryPass::new(device, queue, enabled_features, &buffers, &texture_manager);
         let chunk_bounds_pass = ChunkBoundsPass::new(device, &render_camera.uniform_buffer);
         let buffers = Arc::new(buffers);
 

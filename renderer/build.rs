@@ -13,6 +13,10 @@ fn main() {
         "world_geo_draw",
     );
     wesl.build_artifact(
+        &"package::passes::world_geo_reset".parse().unwrap(),
+        "world_geo_reset",
+    );
+    wesl.build_artifact(
         &"package::passes::world_geo_generate_commands"
             .parse()
             .unwrap(),

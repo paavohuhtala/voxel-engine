@@ -1,4 +1,5 @@
 use std::mem::size_of;
+use std::sync::Arc;
 
 use wgpu::wgt::DrawIndexedIndirectArgs;
 use wgpu::{
@@ -6,6 +7,7 @@ use wgpu::{
     RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderStages, VertexState,
 };
 
+use crate::renderer::EnabledFeatures;
 use crate::rendering::limits::MAX_GPU_CHUNKS;
 use crate::rendering::{
     memory::typed_buffer::{GpuBuffer, GpuBufferArray},
@@ -16,10 +18,13 @@ use crate::rendering::{
 };
 
 pub struct WorldGeometryPass {
+    enabled_features: Arc<EnabledFeatures>,
     camera_bind_group: BindGroup,
     chunks_bind_group: BindGroup,
     culling_bind_group: BindGroup,
     textures_bind_group: BindGroup,
+    reset_culling_bind_group: BindGroup,
+    reset_culling_pipeline: ComputePipeline,
     culling_pipeline: ComputePipeline,
     draw_pipeline: RenderPipeline,
 
@@ -27,13 +32,19 @@ pub struct WorldGeometryPass {
 
     culling_params: GpuBuffer<CullingParams>,
     input_chunk_ids: GpuBufferArray<u32>,
-    draw_commands: GpuBufferArray<DrawIndexedIndirectArgs>,
+
+    opaque_draw_commands: GpuBufferArray<DrawIndexedIndirectArgs>,
+    opaque_draw_command_count: GpuBuffer<u32>,
+
+    alpha_cutout_draw_commands: GpuBufferArray<DrawIndexedIndirectArgs>,
+    alpha_cutout_draw_command_count: GpuBuffer<u32>,
 }
 
 impl WorldGeometryPass {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        enabled_features: Arc<EnabledFeatures>,
         buffers: &WorldBuffers,
         texture_manager: &TextureManager,
     ) -> Self {
@@ -80,12 +91,55 @@ impl WorldGeometryPass {
             mapped_at_creation: false,
         });
 
-        let draw_commands_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Draw commands buffer"),
-            size: (MAX_GPU_CHUNKS * size_of::<DrawIndexedIndirectArgs>() as u64),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
-            mapped_at_creation: false,
-        });
+        let opaque_draw_commands = GpuBufferArray::new(
+            device,
+            queue,
+            "Opaque draw commands buffer",
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
+            MAX_GPU_CHUNKS as usize,
+        );
+        let opaque_draw_command_count = GpuBuffer::from_data(
+            device,
+            queue,
+            "Opaque draw command count buffer",
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::COPY_DST,
+            &0u32,
+        );
+
+        let alpha_cutout_draw_commands = GpuBufferArray::new(
+            device,
+            queue,
+            "Alpha cutout draw commands buffer",
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
+            MAX_GPU_CHUNKS as usize,
+        );
+        let alpha_cutout_draw_command_count = GpuBuffer::from_data(
+            device,
+            queue,
+            "Alpha cutout draw command count buffer",
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::COPY_DST,
+            &0u32,
+        );
+
+        let (reset_culling_bind_group_layout, reset_culling_bind_group) =
+            BindGroupBuilder::new("reset_culling", ShaderStages::COMPUTE)
+                .storage_rw(
+                    0,
+                    "Opaque draw command buffer",
+                    wgpu::BindingResource::Buffer(opaque_draw_commands.binding()),
+                )
+                .storage_rw(
+                    1,
+                    "Alpha cutout draw command buffer",
+                    wgpu::BindingResource::Buffer(alpha_cutout_draw_commands.binding()),
+                )
+                .build(device);
+        let reset_culling_pipeline =
+            create_reset_culling_pipeline(device, &reset_culling_bind_group_layout);
 
         let (culling_bind_group_layout, culling_bind_group) =
             BindGroupBuilder::new("culling", ShaderStages::COMPUTE)
@@ -104,7 +158,28 @@ impl WorldGeometryPass {
                 .storage_rw(
                     2,
                     "Draw commands buffer",
-                    wgpu::BindingResource::Buffer(draw_commands_buffer.as_entire_buffer_binding()),
+                    wgpu::BindingResource::Buffer(opaque_draw_commands.binding()),
+                )
+                .storage_rw(
+                    3,
+                    "Draw command count buffer",
+                    wgpu::BindingResource::Buffer(
+                        opaque_draw_command_count.inner().as_entire_buffer_binding(),
+                    ),
+                )
+                .storage_rw(
+                    4,
+                    "Alpha cutout draw commands buffer",
+                    wgpu::BindingResource::Buffer(alpha_cutout_draw_commands.binding()),
+                )
+                .storage_rw(
+                    5,
+                    "Alpha cutout draw command count buffer",
+                    wgpu::BindingResource::Buffer(
+                        alpha_cutout_draw_command_count
+                            .inner()
+                            .as_entire_buffer_binding(),
+                    ),
                 )
                 .build(device);
 
@@ -146,6 +221,9 @@ impl WorldGeometryPass {
         );
 
         Self {
+            enabled_features,
+            reset_culling_pipeline,
+            reset_culling_bind_group,
             culling_pipeline,
             draw_pipeline,
             camera_bind_group,
@@ -157,7 +235,12 @@ impl WorldGeometryPass {
 
             culling_params: GpuBuffer::from_buffer(queue, culling_params_buffer),
             input_chunk_ids: GpuBufferArray::from_buffer(queue, input_chunk_ids_buffer),
-            draw_commands: GpuBufferArray::from_buffer(queue, draw_commands_buffer),
+
+            opaque_draw_commands,
+            opaque_draw_command_count,
+
+            alpha_cutout_draw_commands,
+            alpha_cutout_draw_command_count,
         }
     }
 
@@ -170,6 +253,24 @@ impl WorldGeometryPass {
     ) {
         self.culling_params.write_data(culling_params);
         self.input_chunk_ids.write_data(chunk_ids);
+        self.opaque_draw_command_count.write_data(&0);
+        self.alpha_cutout_draw_command_count.write_data(&0);
+
+        // If multi-draw indirect count is not supported, we need to zero the instance counts with a separate pass
+        if !self.enabled_features.multi_draw_indirect_count {
+            let mut re4set_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("World geometry culling reset pass"),
+                timestamp_writes: None,
+            });
+            re4set_pass.set_pipeline(&self.reset_culling_pipeline);
+            re4set_pass.set_bind_group(0, &self.reset_culling_bind_group, &[]);
+            let workgroup_count = self
+                .opaque_draw_commands
+                .capacity()
+                .max(self.alpha_cutout_draw_commands.capacity())
+                .div_ceil(64);
+            re4set_pass.dispatch_workgroups(workgroup_count as u32, 1, 1);
+        }
 
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("World geometry culling pass"),
@@ -224,8 +325,48 @@ impl WorldGeometryPass {
             wgpu::IndexFormat::Uint16,
         );
 
-        render_pass.multi_draw_indexed_indirect(self.draw_commands.inner(), 0, max_draw_count);
+        if self.enabled_features.multi_draw_indirect_count {
+            render_pass.multi_draw_indexed_indirect_count(
+                self.opaque_draw_commands.inner(),
+                0,
+                self.opaque_draw_command_count.inner(),
+                0,
+                max_draw_count,
+            );
+        } else {
+            render_pass.multi_draw_indexed_indirect(
+                self.opaque_draw_commands.inner(),
+                0,
+                max_draw_count,
+            );
+        }
     }
+}
+
+fn create_reset_culling_pipeline(
+    device: &wgpu::Device,
+    culling_bind_group_layout: &wgpu::BindGroupLayout,
+) -> ComputePipeline {
+    let source = include_str!(concat!(env!("OUT_DIR"), "/world_geo_reset.wgsl"));
+    let module = device.create_shader_module(ShaderModuleDescriptor {
+        label: Some("World geometry clear command buffers shader"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("World geometry clear command buffers pipeline layout"),
+        bind_group_layouts: &[culling_bind_group_layout],
+        ..Default::default()
+    });
+
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("World geometry clear command buffers pipeline"),
+        layout: Some(&pipeline_layout),
+        module: &module,
+        entry_point: Some("main"),
+        cache: None,
+        compilation_options: Default::default(),
+    })
 }
 
 fn create_draw_command_pipeline(

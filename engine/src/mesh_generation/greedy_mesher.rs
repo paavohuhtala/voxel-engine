@@ -255,14 +255,16 @@ impl GreedyMesher {
             FaceDiagonal::TopLeftToBottomRight
         };
 
-        chunk_mesh_data.faces.push(PackedVoxelFace::from(VoxelFace {
-            position: origin.to_world(),
-            face_direction: face,
-            size,
-            ambient_occlusion: ao,
-            flip_diagonal: diagonal == FaceDiagonal::TopLeftToBottomRight,
-            texture_index,
-        }))
+        chunk_mesh_data
+            .opaque_faces
+            .push(PackedVoxelFace::from(VoxelFace {
+                position: origin.to_world(),
+                face_direction: face,
+                size,
+                ambient_occlusion: ao,
+                flip_diagonal: diagonal == FaceDiagonal::TopLeftToBottomRight,
+                texture_index,
+            }))
     }
 
     fn calculate_face_ao(
@@ -370,13 +372,13 @@ mod tests {
         let mesh = mesher.generate_mesh(&input);
 
         // A single voxel should have 6 faces
-        assert_eq!(mesh.faces.len(), 6);
+        assert_eq!(mesh.opaque_faces.len(), 6);
 
         // Check faces
         // All faces should be at (1,1,1) with size (1,1), with texture index 1 and no AO
         // There should be one face for each direction
         let mut directions_found = [false; 6];
-        for face in &mesh.faces {
+        for face in &mesh.opaque_faces {
             let unpacked = face.unpack();
             assert_eq!(unpacked.position, U8Vec3::new(1, 1, 1));
             assert_eq!(unpacked.size, U8Vec2::new(1, 1));
@@ -407,7 +409,7 @@ mod tests {
 
         let mesh = mesher.generate_mesh(&input);
         let all_faces = mesh
-            .faces
+            .opaque_faces
             .iter()
             .map(|f| {
                 let unpacked = f.unpack();
@@ -416,7 +418,7 @@ mod tests {
             .collect::<HashMap<Face, _>>();
 
         // There should be 6 faces total
-        assert_eq!(mesh.faces.len(), 6);
+        assert_eq!(mesh.opaque_faces.len(), 6);
 
         let left_face = all_faces.get(&Face::Left).expect("Expected left face");
         let right_face = all_faces.get(&Face::Right).expect("Expected right face");

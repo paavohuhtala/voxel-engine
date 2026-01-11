@@ -15,9 +15,9 @@ pub struct GpuChunk {
     // World position of the chunk (x, y, z, w unused)
     pub position: IVec4,
     pub face_byte_offset: u32,
-    pub face_count: u32,
+    pub total_face_count: u32,
+    pub opaque_face_count: u32,
     pub aabb: PackedAABB,
-    pub _padding: u32,
 }
 
 pub struct ChunkMesh {

@@ -4,7 +4,7 @@ use anyhow::Context;
 use serde::Deserialize;
 
 use crate::{
-    assets::world_textures::{WorldTextureHandle, WorldTextures},
+    assets::world_textures::{TextureTransparency, WorldTextureHandle, WorldTextures},
     voxels::face::Face,
 };
 
@@ -60,6 +60,7 @@ pub struct BlockDefinition {
     pub id: u16,
     pub name: String,
     pub textures: BlockTextureDefinition,
+    pub transparency: Option<TextureTransparency>,
 }
 
 pub struct BlockDatabase {
@@ -100,16 +101,26 @@ impl BlockDatabase {
         &mut self,
         block: BlockDefinition,
     ) -> anyhow::Result<BlockTypeId> {
+        let transparency = block.transparency.unwrap_or(TextureTransparency::Opaque);
+
         let indices = match block.textures {
             BlockTextureDefinition::Invisible => None,
             BlockTextureDefinition::Single(single) => {
-                let index = self.world_textures.load_from_path_and_allocate(&single)?;
+                let index = self
+                    .world_textures
+                    .load_from_path_and_allocate(&single, transparency)?;
                 Some(TextureIndices::new_single(index))
             }
             BlockTextureDefinition::PerFace { top, bottom, side } => {
-                let top_index = self.world_textures.load_from_path_and_allocate(&top)?;
-                let bottom_index = self.world_textures.load_from_path_and_allocate(&bottom)?;
-                let side_index = self.world_textures.load_from_path_and_allocate(&side)?;
+                let top_index = self
+                    .world_textures
+                    .load_from_path_and_allocate(&top, transparency)?;
+                let bottom_index = self
+                    .world_textures
+                    .load_from_path_and_allocate(&bottom, transparency)?;
+                let side_index = self
+                    .world_textures
+                    .load_from_path_and_allocate(&side, transparency)?;
                 Some(TextureIndices {
                     top: top_index,
                     bottom: bottom_index,

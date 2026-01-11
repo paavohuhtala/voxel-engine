@@ -31,7 +31,14 @@ var<uniform> culling_params: CullingParams;
 var<storage, read> input_chunk_ids: array<u32>;
 
 @group(2) @binding(2)
-var<storage, read_write> draw_commands: array<DrawIndexedIndirect>;
+var<storage, read_write> opaque_draw_commands: array<DrawIndexedIndirect>;
+@group(2) @binding(3)
+var<storage, read_write> opaque_draw_commands_count: atomic<u32>;
+
+@group(2) @binding(4)
+var<storage, read_write> alpha_cutout_draw_commands: array<DrawIndexedIndirect>;
+@group(2) @binding(5)
+var<storage, read_write> alpha_cutout_draw_commands_count: atomic<u32>;
 
 @compute @workgroup_size(64)
 fn main(
@@ -52,24 +59,39 @@ fn main(
     aabb.max += chunk_pos;
 
     var is_visible = intersects_frustum(frustum, aabb);
-    if !is_visible {
-        draw_commands[index] = DrawIndexedIndirect(0u, 0u, 0u, 0i, 0u);
-    } else {
-        // Let's abuse base_vertex to smuggle chunk_id to the vertex shader!
-        // base_vertex is added to the index and passed to the vertex shader as vertex_index
-        // Since each face has 4 vertices, the indices range between 0 and 3. We only need the two lowest bits for the actual vertex index.
-        // The vertex shader undoes this packing to get the chunk id back.
-        let packed_chunk_id = bitcast<i32>(insertBits(0u, chunk_id, 2u, 30u));
 
-        // first_instance = 0 because the vertex shader uses chunk.face_byte_offset
-        // to calculate the absolute byte position of each face.
-        // instance_index (local_face_index) will be 0, 1, 2, ... for each face in the chunk.
-        draw_commands[index] = DrawIndexedIndirect(
+    if !is_visible {
+        return;
+    }
+
+    // Let's abuse base_vertex to smuggle chunk_id to the vertex shader!
+    // base_vertex is added to the index and passed to the vertex shader as vertex_index
+    // Since each face has 4 vertices, the indices range between 0 and 3. We only need the two lowest bits for the actual vertex index.
+    // The vertex shader undoes this packing to get the chunk id back.
+    let packed_chunk_id = bitcast<i32>(insertBits(0u, chunk_id, 2u, 30u));
+
+    if (chunk.opaque_face_count > 0u) {
+        let command_index = atomicAdd(&opaque_draw_commands_count, 1u);
+        opaque_draw_commands[command_index] = DrawIndexedIndirect(
             6,
-            chunk.face_count,
+            chunk.opaque_face_count,
             0,
             packed_chunk_id,
             0u  // first_instance = 0, local face indices start at 0
+        );
+    }
+
+    let alpha_cutout_face_count = chunk.total_face_count - chunk.opaque_face_count;
+
+    if (alpha_cutout_face_count > 0u) {
+        let command_index = atomicAdd(&alpha_cutout_draw_commands_count, 1u);
+        let first_instance = chunk.opaque_face_count;
+        alpha_cutout_draw_commands[command_index] = DrawIndexedIndirect(
+            6,
+            alpha_cutout_face_count,
+            0,
+            packed_chunk_id,
+            first_instance
         );
     }
 }
